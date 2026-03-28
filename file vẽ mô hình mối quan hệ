@@ -1,0 +1,88 @@
+Project he_thong_quan_ly_nha_hang {
+  database_type: "SQLite"
+}
+
+Table nhan_vien {
+  id integer [pk, increment]
+  ten_dang_nhap text [not null, unique]
+  mat_khau text [not null]
+  vai_tro text [not null]
+  so_lan_sai integer [not null, default: 0]
+  khoa_den integer
+  thoi_gian_dang_nhap text
+  thoi_gian_dang_xuat text
+}
+
+Table ban_an {
+  id integer [pk, increment]
+  ten_ban text [not null, unique]
+  trang_thai text [not null]
+}
+
+Table mon_an {
+  id integer [pk, increment]
+  ma_mon text [not null, unique]
+  ten_mon text [not null]
+  gia integer [not null]
+}
+
+Table nguyen_lieu {
+  id integer [pk, increment]
+  ma_nguyen_lieu text [not null, unique]
+  ten_nguyen_lieu text [not null]
+  so_luong_ton integer [not null]
+  don_vi text [not null]
+}
+
+Table mon_an_nguyen_lieu {
+  ma_mon integer [not null]
+  ma_nguyen_lieu integer [not null]
+  so_luong_su_dung integer [not null, default: 0]
+
+  indexes {
+    (ma_mon, ma_nguyen_lieu) [pk]
+  }
+}
+
+Table don_hang {
+  id integer [pk, increment]
+  ma_ban integer [not null]
+  ma_mon integer [not null]
+  ma_nhan_vien integer
+  ten_mon text [not null]
+  so_luong integer [not null]
+  don_gia integer [not null]
+  trang_thai text [not null]
+  thoi_gian_tao text [not null]
+}
+
+Table hoa_don {
+  id integer [pk, increment]
+  ma_ban integer [not null]
+  ma_nhan_vien integer
+  tam_tinh integer [not null]
+  giam_gia integer [not null]
+  thanh_tien integer [not null]
+  thoi_gian_tao text [not null]
+}
+
+Table thong_ke_he_thong {
+  id integer [pk, note: "1 bản ghi duy nhất (id = 1)"]
+  so_nhan_vien integer [not null, default: 0]
+  so_mon_an integer [not null, default: 0]
+  so_ban_an integer [not null, default: 0]
+  so_nguyen_lieu integer [not null, default: 0]
+  so_hoa_don integer [not null, default: 0]
+  so_don_hang integer [not null, default: 0]
+  thoi_gian_cap_nhat text [not null]
+}
+
+Ref: don_hang.ma_ban > ban_an.id
+Ref: don_hang.ma_mon > mon_an.id
+Ref: don_hang.ma_nhan_vien > nhan_vien.id
+
+Ref: hoa_don.ma_ban > ban_an.id
+Ref: hoa_don.ma_nhan_vien > nhan_vien.id
+
+Ref: mon_an_nguyen_lieu.ma_mon > mon_an.id
+Ref: mon_an_nguyen_lieu.ma_nguyen_lieu > nguyen_lieu.id
