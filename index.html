@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Quan Ly Order Nha Hang - 2 Lop</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@300;400;500;700;800&family=Playfair+Display:wght@600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!--
+    Ghi chú chức năng file index.html
+    1) Khung giao diện 2 lớp: xác thực và nghiệp vụ nhà hàng.
+    2) Khu nghiệp vụ gồm: quản lý bàn, đặt món, bếp, thanh toán, doanh thu, kho nguyên liệu.
+    3) Mọi xử lý dữ liệu được gọi qua app.js tới API backend (server.js + SQLite).
+  -->
+  <div class="bg-shape bg-shape-1"></div>
+  <div class="bg-shape bg-shape-2"></div>
+
+  <main class="shell">
+    <header class="hero">
+      <h1>Hệ thống quản lý nhà hàng</h1>
+    </header>
+
+    <section id="authLayer" class="layer auth-layer">
+      <!-- Lớp xác thực: đăng nhập, đăng ký (vai trò giới hạn), quên mật khẩu -->
+      <div class="auth-layout">
+        <aside class="auth-tabs" role="tablist" aria-label="Auth tabs">
+          <button class="tab-btn active" data-tab="login" role="tab">Truy cập</button>
+          <button class="tab-btn" data-tab="register" role="tab">Tạo tài khoản</button>
+          <button class="tab-btn" data-tab="forgot" role="tab">Khôi phục mật khẩu</button>
+        </aside>
+
+        <div class="auth-panels">
+          <form id="loginForm" class="auth-card active" data-panel="login">
+            <h3>Truy cập hệ thống</h3>
+            <label>Tên đăng nhập</label>
+            <input type="text" id="loginUsername" required />
+
+            <label>Mật khẩu</label>
+            <input type="password" id="loginPassword" required />
+
+            <button type="submit" class="primary">Vào hệ thống</button>
+            <p id="loginMessage" class="message" aria-live="polite"></p>
+          </form>
+
+          <form id="registerForm" class="auth-card" data-panel="register">
+            <h3>Tạo tài khoản mới</h3>
+            <label>Tên đăng nhập</label>
+            <input type="text" id="regUsername" required />
+
+            <label>Mật khẩu</label>
+            <input type="password" id="regPassword" minlength="6" required />
+
+            <label>Vai trò</label>
+            <select id="regRole" required>
+              <option value="waiter">Nhân viên phục vụ</option>
+              <option value="cashier">Thu ngân</option>
+            </select>
+            <p class="hint">Tài khoản quản lý được cấp riêng bởi hệ thống, không đăng ký tại đây.</p>
+
+            <button type="submit" class="primary">Tạo tài khoản</button>
+            <p id="registerMessage" class="message" aria-live="polite"></p>
+          </form>
+
+          <form id="forgotForm" class="auth-card" data-panel="forgot">
+            <h3>Khôi phục mật khẩu</h3>
+            <label>Tên đăng nhập</label>
+            <input type="text" id="forgotUsername" required />
+
+            <label>Mật khẩu mới</label>
+            <input type="password" id="forgotNewPassword" minlength="6" required />
+
+            <button type="submit" class="primary">Đặt lại mật khẩu</button>
+            <p id="forgotMessage" class="message" aria-live="polite"></p>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <section id="appLayer" class="layer app-layer hidden">
+      <!-- Lớp nghiệp vụ: chỉ hiển thị sau đăng nhập thành công -->
+      <div class="session-corner">
+        <p id="welcomeText" class="welcome-pill"></p>
+        <button id="logoutBtn" class="ghost">Đăng xuất</button>
+      </div>
+
+      <div class="app-grid">
+        <article class="card" id="tableCard">
+          <!-- Chức năng bàn: theo dõi trạng thái từng bàn và xử lý song song -->
+          <h3>Lễ tân - Quản lý bàn</h3>
+          <p>Tìm bàn trống và cập nhật trạng thái bàn.</p>
+          <div id="tableList" class="table-list"></div>
+        </article>
+
+        <article class="card" id="orderCard">
+          <!-- Chức năng đặt món: tạo đơn theo bàn và gửi bếp -->
+          <h3>Nhân viên phục vụ - Đặt món</h3>
+          <form id="orderForm" class="stack">
+            <label>Ban</label>
+            <select id="orderTable"></select>
+
+            <label>Món ăn</label>
+            <select id="orderMenu"></select>
+
+            <label>Số lượng</label>
+            <input type="number" id="orderQty" min="1" value="1" required />
+
+            <button type="submit" class="primary">Thêm vào order</button>
+            <p id="orderMessage" class="message"></p>
+          </form>
+          <div id="currentOrder" class="list-box"></div>
+          <button id="sendKitchenBtn" class="secondary">Gửi bếp chế biến</button>
+        </article>
+
+        <article class="card" id="kitchenCard">
+          <!-- Chức năng bếp: xác nhận món hoàn tất, cập nhật trạng thái đơn -->
+          <h3>Bộ phận bếp</h3>
+          <p>Xác nhận hoàn tất món.</p>
+          <div id="kitchenQueue" class="list-box"></div>
+        </article>
+
+        <article class="card" id="billingCard">
+          <!-- Chức năng thu ngân: thanh toán, áp khuyến mãi, xuất hóa đơn -->
+          <h3>Thu ngân - Hóa đơn</h3>
+          <form id="billingForm" class="stack">
+            <label>Bàn cần thanh toán</label>
+            <select id="billTable"></select>
+
+            <label>Mã khuyến mãi (nếu có)</label>
+            <input id="promoCode" type="text" placeholder="Ví dụ: GIAM10" />
+
+            <button type="submit" class="primary">Tính tiền và in hóa đơn</button>
+          </form>
+          <div id="invoicePreview" class="list-box"></div>
+        </article>
+
+        <article class="card" id="reportCard">
+          <!-- Chức năng quản lý: xem doanh thu tổng -->
+          <h3>Quản lý doanh thu</h3>
+          <p id="revenueInfo">Doanh thu hôm nay: 0 VND</p>
+          <p class="hint">Sau thanh toán: doanh thu được ghi nhận, trạng thái bàn về trống.</p>
+        </article>
+
+        <article class="card" id="ingredientCard">
+          <!-- Chức năng kho: quản lý nguyên liệu và định mức món-nguyên liệu -->
+          <h3>Kho nguyên liệu</h3>
+          <p>Thiết lập định mức cho từng món ăn.</p>
+
+          <div class="ingredient-grid">
+            <form id="ingredientForm" class="stack">
+              <h4>1) Thêm nguyên liệu kho</h4>
+              <label>Mã nguyên liệu</label>
+              <input id="ingCode" type="text" placeholder="VD: nl20" required />
+
+              <label>Tên nguyên liệu</label>
+              <input id="ingName" type="text" placeholder="VD: Tôm tươi" required />
+
+              <label>Số lượng tồn</label>
+              <input id="ingQty" type="number" min="0" value="0" required />
+
+              <label>Đơn vị</label>
+              <input id="ingUnit" type="text" placeholder="gram / ml / chai" required />
+
+              <button type="submit" class="primary">Lưu nguyên liệu</button>
+              <p id="ingredientMessage" class="message"></p>
+            </form>
+
+            <form id="recipeForm" class="stack">
+              <h4>2) Gán định mức cho món</h4>
+              <label>Món ăn</label>
+              <select id="recipeDish"></select>
+
+              <label>Nguyên liệu</label>
+              <select id="recipeIngredient"></select>
+
+              <label>Số lượng sử dụng cho 1 món</label>
+              <input id="recipeQty" type="number" min="1" value="1" required />
+
+              <button type="submit" class="secondary">Lưu định mức</button>
+              <p id="recipeMessage" class="message"></p>
+            </form>
+          </div>
+
+          <div class="ingredient-grid">
+            <div>
+              <h4>Tồn kho nguyên liệu</h4>
+              <div id="ingredientList" class="list-box"></div>
+            </div>
+            <div>
+              <h4>Định mức theo món</h4>
+              <div id="recipeList" class="list-box"></div>
+            </div>
+          </div>
+        </article>
+      </div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
