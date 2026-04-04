@@ -1,0 +1,77 @@
+// Table ban_an
+CREATE TABLE "ban_an" (
+        ma_ban TEXT PRIMARY KEY,
+        ten_ban TEXT NOT NULL UNIQUE,
+        trang_thai TEXT NOT NULL
+      )
+// Table Don_hang
+CREATE TABLE "don_hang" (
+        ma_don_hang TEXT PRIMARY KEY,
+        ma_ban TEXT NOT NULL,
+        ma_mon TEXT NOT NULL,
+        ma_nhan_vien TEXT,
+        ten_mon TEXT NOT NULL,
+        so_luong INTEGER NOT NULL,
+        don_gia INTEGER NOT NULL,
+        trang_thai TEXT NOT NULL,
+        thoi_gian_tao TEXT NOT NULL,
+        FOREIGN KEY(ma_ban) REFERENCES ban_an(ma_ban),
+        FOREIGN KEY(ma_mon) REFERENCES mon_an(ma_mon),
+        FOREIGN KEY(ma_nhan_vien) REFERENCES nhan_vien(ma_nhan_vien)
+      )
+// Table Hoa_don
+CREATE TABLE "hoa_don" (
+        ma_hoa_don TEXT PRIMARY KEY,
+        ma_ban TEXT NOT NULL,
+        ma_nhan_vien TEXT,
+        tam_tinh INTEGER NOT NULL,
+        giam_gia INTEGER NOT NULL,
+        thanh_tien INTEGER NOT NULL,
+        thoi_gian_tao TEXT NOT NULL,
+        FOREIGN KEY(ma_ban) REFERENCES ban_an(ma_ban),
+        FOREIGN KEY(ma_nhan_vien) REFERENCES nhan_vien(ma_nhan_vien)
+      )
+// Table Mon_an
+CREATE TABLE "mon_an" (
+        ma_mon TEXT PRIMARY KEY,
+        ten_mon TEXT NOT NULL,
+        gia INTEGER NOT NULL
+      )
+// Table Mon_an_nguyen_lieu
+CREATE TABLE "mon_an_nguyen_lieu" (
+        ma_mon TEXT NOT NULL,
+        ma_nguyen_lieu TEXT NOT NULL,
+        so_luong_su_dung INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (ma_mon, ma_nguyen_lieu),
+        FOREIGN KEY(ma_mon) REFERENCES mon_an(ma_mon),
+        FOREIGN KEY(ma_nguyen_lieu) REFERENCES nguyen_lieu(ma_nguyen_lieu)
+      )
+// Table Nguyen_lieu
+CREATE TABLE "nguyen_lieu" (
+        ma_nguyen_lieu TEXT PRIMARY KEY,
+        ten_nguyen_lieu TEXT NOT NULL,
+        so_luong_ton INTEGER NOT NULL,
+        don_vi TEXT NOT NULL
+      )
+// Table Nhan_vien
+CREATE TABLE "nhan_vien" (
+        ma_nhan_vien TEXT PRIMARY KEY,
+        ten_dang_nhap TEXT NOT NULL UNIQUE,
+        mat_khau TEXT NOT NULL,
+        vai_tro TEXT NOT NULL,
+        so_lan_sai INTEGER NOT NULL DEFAULT 0,
+        khoa_den INTEGER,
+        thoi_gian_dang_nhap TEXT,
+        thoi_gian_dang_xuat TEXT
+      )
+// Table Thong_ke_he_thong
+CREATE TABLE "thong_ke_he_thong" (
+        ma_thong_ke TEXT PRIMARY KEY,
+        so_nhan_vien INTEGER NOT NULL DEFAULT 0,
+        so_mon_an INTEGER NOT NULL DEFAULT 0,
+        so_ban_an INTEGER NOT NULL DEFAULT 0,
+        so_nguyen_lieu INTEGER NOT NULL DEFAULT 0,
+        so_hoa_don INTEGER NOT NULL DEFAULT 0,
+        so_don_hang INTEGER NOT NULL DEFAULT 0,
+        thoi_gian_cap_nhat TEXT NOT NULL
+      )
