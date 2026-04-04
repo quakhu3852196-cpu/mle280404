@@ -22,6 +22,7 @@ const roleConfigs = {
       table: true,
       order: true,
       kitchen: true,
+      orderPreview: true,
       billing: true,
       report: true,
       ingredient: true
@@ -38,6 +39,7 @@ const roleConfigs = {
       table: true,
       order: true,
       kitchen: true,
+      orderPreview: true,
       billing: false,
       report: false,
       ingredient: false
@@ -54,6 +56,7 @@ const roleConfigs = {
       table: true,
       order: false,
       kitchen: false,
+      orderPreview: true,
       billing: true,
       report: true,
       ingredient: false
@@ -250,6 +253,7 @@ function applyRolePermission(role) {
   const tableCard = document.getElementById("tableCard");
   const orderCard = document.getElementById("orderCard");
   const kitchenCard = document.getElementById("kitchenCard");
+  const orderPreviewCard = document.getElementById("orderPreviewCard");
   const billingCard = document.getElementById("billingCard");
   const reportCard = document.getElementById("reportCard");
   const ingredientCard = document.getElementById("ingredientCard");
@@ -258,9 +262,80 @@ function applyRolePermission(role) {
   tableCard.style.display = cfg.cards.table ? "block" : "none";
   orderCard.style.display = cfg.cards.order ? "block" : "none";
   kitchenCard.style.display = cfg.cards.kitchen ? "block" : "none";
+  orderPreviewCard.style.display = cfg.cards.orderPreview ? "block" : "none";
   billingCard.style.display = cfg.cards.billing ? "block" : "none";
   reportCard.style.display = cfg.cards.report ? "block" : "none";
   ingredientCard.style.display = cfg.cards.ingredient ? "block" : "none";
+}
+
+function orderStatusLabel(status) {
+  if (status === "moi") return "Mới tạo";
+  if (status === "dang-che-bien") return "Đang chế biến";
+  if (status === "hoan-tat") return "Hoàn tất";
+  return status;
+}
+
+function renderOrderPreview() {
+  const previewBox = document.getElementById("orderPreviewList");
+  if (!previewBox) {
+    return;
+  }
+
+  if (!appState.orders.length) {
+    previewBox.innerHTML = "<p>Chưa có đơn hàng nào trong hệ thống.</p>";
+    return;
+  }
+
+  const tableNameMap = appState.tables.reduce((acc, table) => {
+    acc[String(table.id)] = table.name;
+    return acc;
+  }, {});
+
+  const grouped = appState.orders.reduce((acc, order) => {
+    const key = String(order.tableId);
+    if (!acc[key]) {
+      acc[key] = [];
+    }
+    acc[key].push(order);
+    return acc;
+  }, {});
+
+  const tableIds = Object.keys(grouped).sort((a, b) => a.localeCompare(b, "vi", { numeric: true }));
+
+  previewBox.innerHTML = tableIds
+    .map((tableId) => {
+      const orders = grouped[tableId];
+      const tableName = tableNameMap[tableId] || tableId;
+      const tongSoLuong = orders.reduce((sum, item) => sum + Number(item.qty || 0), 0);
+      const tamTinh = orders.reduce((sum, item) => sum + Number(item.qty || 0) * Number(item.price || 0), 0);
+
+      const orderRows = orders
+        .map((order) => {
+          const lineTotal = Number(order.qty || 0) * Number(order.price || 0);
+          const created = order.createdAt ? `<small>Tạo lúc: ${order.createdAt}</small>` : "";
+          return `
+            <div class='order-preview-row'>
+              <div>
+                <strong>${order.menuName}</strong> x ${order.qty} - ${money(lineTotal)}<br />
+                ${created}
+              </div>
+              <span class='order-status order-status-${order.status}'>${orderStatusLabel(order.status)}</span>
+            </div>
+          `;
+        })
+        .join("");
+
+      return `
+        <div class='list-item order-preview-group'>
+          <div class='order-preview-header'>
+            <strong>${tableName}</strong>
+            <span class='order-preview-meta'>${orders.length} dòng món | SL ${tongSoLuong} | Tạm tính ${money(tamTinh)}</span>
+          </div>
+          <div class='order-preview-body'>${orderRows}</div>
+        </div>
+      `;
+    })
+    .join("");
 }
 
 function renderTables() {
@@ -270,7 +345,7 @@ function renderTables() {
   const tables = appState.tables;
   const cfg = getRoleConfig();
   const orderCountByTable = appState.orders.reduce((acc, order) => {
-    const key = Number(order.tableId);
+    const key = String(order.tableId);
     acc[key] = (acc[key] || 0) + 1;
     return acc;
   }, {});
@@ -282,7 +357,7 @@ function renderTables() {
   tables.forEach((t) => {
     const item = document.createElement("div");
     item.className = "table-item";
-    const soMon = orderCountByTable[t.id] || 0;
+    const soMon = orderCountByTable[String(t.id)] || 0;
     item.innerHTML = `
       <div>
         <strong>${t.name}</strong><br />
@@ -313,9 +388,9 @@ function renderTables() {
       if (!cfg.canChangeTable) {
         return;
       }
-      const id = Number(btn.dataset.id);
+      const id = String(btn.dataset.id || "");
       try {
-        await api(`/api/ban-an/${id}/chuyen-trang-thai`, { method: "POST" });
+        await api(`/api/ban-an/${encodeURIComponent(id)}/chuyen-trang-thai`, { method: "POST" });
         await renderAll();
       } catch (error) {
         // eslint-disable-next-line no-alert
@@ -361,22 +436,43 @@ function renderIngredientSelect() {
     : "<p>Chưa có nguyên liệu nào trong kho.</p>";
 }
 
-async function renderRecipeList() {
-  const dishId = Number(document.getElementById("recipeDish").value || 0);
-  const recipeList = document.getElementById("recipeList");
-  if (!dishId) {
-    recipeList.innerHTML = "<p>Chưa chọn món để xem định mức.</p>";
+async function renderAllRecipeList() {
+  const recipeAllList = document.getElementById("recipeAllList");
+  if (!recipeAllList) {
     return;
   }
 
   try {
-    const result = await api(`/api/mon-an/${dishId}/nguyen-lieu`);
+    const result = await api("/api/mon-an-nguyen-lieu/tat-ca");
     const items = result.recipeItems || [];
-    recipeList.innerHTML = items.length
-      ? items.map((item) => `<div class='list-item'>${item.name} - dùng ${item.usageQty} ${item.unit} | tồn: ${item.stockQty} ${item.unit}</div>`).join("")
-      : "<p>Món này chưa có định mức nguyên liệu.</p>";
+
+    if (!items.length) {
+      recipeAllList.innerHTML = "<p>Chưa có định mức nguyên liệu nào.</p>";
+      return;
+    }
+
+    const grouped = items.reduce((acc, item) => {
+      const key = String(item.menuId);
+      if (!acc[key]) {
+        acc[key] = {
+          menuName: item.menuName,
+          rows: []
+        };
+      }
+      acc[key].rows.push(item);
+      return acc;
+    }, {});
+
+    recipeAllList.innerHTML = Object.values(grouped)
+      .map((group) => {
+        const lines = group.rows
+          .map((row) => `- ${row.ingredientName}: <strong>${row.usageQty} ${row.unit}</strong> (tồn ${row.stockQty} ${row.unit})`)
+          .join("<br />");
+        return `<div class='list-item'><strong>${group.menuName}</strong><br />${lines}</div>`;
+      })
+      .join("");
   } catch (error) {
-    recipeList.innerHTML = `<p>${error.message}</p>`;
+    recipeAllList.innerHTML = `<p>${error.message}</p>`;
   }
 }
 
@@ -417,8 +513,8 @@ function bindIngredientFlow() {
   recipeForm.addEventListener("submit", async (e) => {
     e.preventDefault();
 
-    const menuId = Number(document.getElementById("recipeDish").value);
-    const ingredientId = Number(document.getElementById("recipeIngredient").value);
+    const menuId = document.getElementById("recipeDish").value;
+    const ingredientId = document.getElementById("recipeIngredient").value;
     const usageQty = Number(document.getElementById("recipeQty").value);
 
     if (!menuId || !ingredientId || usageQty <= 0) {
@@ -432,14 +528,10 @@ function bindIngredientFlow() {
         body: JSON.stringify({ menuId, ingredientId, usageQty })
       });
       setMessage(recipeMessage, "Đã lưu định mức nguyên liệu cho món.", "ok");
-      await renderRecipeList();
+      await renderAllRecipeList();
     } catch (error) {
       setMessage(recipeMessage, error.message, "error");
     }
-  });
-
-  recipeDish.addEventListener("change", () => {
-    renderRecipeList();
   });
 }
 
@@ -457,7 +549,7 @@ function bindOrderAction() {
       return;
     }
 
-    const tableId = Number(document.getElementById("orderTable").value);
+    const tableId = document.getElementById("orderTable").value;
     const menuId = document.getElementById("orderMenu").value;
     const qty = Number(document.getElementById("orderQty").value);
 
@@ -469,7 +561,7 @@ function bindOrderAction() {
     try {
       await api("/api/don-hang", {
         method: "POST",
-        body: JSON.stringify({ tableId, menuId: Number(menuId), qty, userId: currentUser?.id })
+        body: JSON.stringify({ tableId, menuId, qty, userId: currentUser?.id })
       });
 
       setMessage(orderMessage, "Đã thêm món vào order.", "ok");
@@ -486,7 +578,7 @@ function bindOrderAction() {
       return;
     }
 
-    const selectedTableId = Number(document.getElementById("orderTable").value);
+    const selectedTableId = document.getElementById("orderTable").value;
     try {
       await api("/api/don-hang/gui-bep", {
         method: "POST",
@@ -500,7 +592,7 @@ function bindOrderAction() {
   });
 
   const drawCurrentOrder = () => {
-    const tableId = Number(document.getElementById("orderTable").value);
+    const tableId = document.getElementById("orderTable").value;
     const orders = appState.orders.filter((o) => o.tableId === tableId);
     currentOrder.innerHTML = orders.length
       ? orders.map((o) => `<div class='list-item'>${o.menuName} x ${o.qty} - ${o.status}</div>`).join("")
@@ -514,6 +606,10 @@ function bindOrderAction() {
 function renderKitchen() {
   const box = document.getElementById("kitchenQueue");
   const orders = appState.orders.filter((o) => o.status === "dang-che-bien");
+  const tableNameMap = appState.tables.reduce((acc, table) => {
+    acc[String(table.id)] = table.name;
+    return acc;
+  }, {});
   const cfg = getRoleConfig();
   box.innerHTML = "";
 
@@ -525,9 +621,10 @@ function renderKitchen() {
   orders.forEach((o) => {
     const row = document.createElement("div");
     row.className = "list-item";
+    const tableName = tableNameMap[String(o.tableId)] || o.tableId;
     row.innerHTML = `
       <div>
-        <strong>Ban ${o.tableId}</strong> - ${o.menuName} x ${o.qty}
+        <strong>${tableName}</strong> - ${o.menuName} x ${o.qty}
       </div>
       ${cfg.canCompleteKitchen ? `<button data-id="${o.id}" class="secondary" style="margin-top:0">Xác nhận xong</button>` : ""}
     `;
@@ -539,9 +636,9 @@ function renderKitchen() {
       if (!cfg.canCompleteKitchen) {
         return;
       }
-      const id = Number(btn.dataset.id);
+      const id = String(btn.dataset.id || "");
       try {
-        await api(`/api/bep/${id}/hoan-tat`, { method: "POST" });
+        await api(`/api/bep/${encodeURIComponent(id)}/hoan-tat`, { method: "POST" });
         await renderAll();
       } catch (error) {
         // eslint-disable-next-line no-alert
@@ -564,7 +661,7 @@ function bindBilling() {
       return;
     }
 
-    const tableId = Number(document.getElementById("billTable").value);
+    const tableId = document.getElementById("billTable").value;
     const promo = document.getElementById("promoCode").value.trim().toUpperCase();
 
     try {
@@ -623,16 +720,17 @@ async function renderAll() {
   renderMenuSelect();
   renderIngredientSelect();
   renderKitchen();
+  renderOrderPreview();
   renderRevenue();
 
-  const tableId = Number(document.getElementById("orderTable").value || 1);
+  const tableId = document.getElementById("orderTable").value || "";
   const currentOrder = document.getElementById("currentOrder");
-  const orders = appState.orders.filter((o) => o.tableId === tableId);
+  const orders = tableId ? appState.orders.filter((o) => o.tableId === tableId) : [];
   currentOrder.innerHTML = orders.length
     ? orders.map((o) => `<div class='list-item'>${o.menuName} x ${o.qty} - ${o.status}</div>`).join("")
     : "<p>Chưa có món nào cho bàn này.</p>";
 
-  await renderRecipeList();
+  await renderAllRecipeList();
 }
 
 function bindLogout() {
