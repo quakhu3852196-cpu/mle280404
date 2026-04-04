@@ -6,11 +6,13 @@
 */
 
 const express = require("express");
+const os = require("os");
 const path = require("path");
 const sqlite3 = require("sqlite3").verbose();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const HOST = process.env.HOST || "0.0.0.0";
 const DB_PATH = path.join(__dirname, "restaurant.db");
 
 const DEFAULT_MENU_ITEMS = [
@@ -113,9 +115,7 @@ const DEFAULT_RECIPE_MAP = {
     { ingredientCode: "nl4", usageQty: 30 },
     { ingredientCode: "nl5", usageQty: 10 }
   ],
-  m12: [
-    { ingredientCode: "nl14", usageQty: 2 }
-  ],
+  m12: [{ ingredientCode: "nl14", usageQty: 2 }],
   m13: [
     { ingredientCode: "nl15", usageQty: 18 },
     { ingredientCode: "nl16", usageQty: 1 }
@@ -165,9 +165,595 @@ function dbAll(sql, params = []) {
   });
 }
 
+async function tableExists(tableName) {
+  const row = await dbGet("SELECT name FROM sqlite_master WHERE type='table' AND name = ?", [tableName]);
+  return Boolean(row);
+}
+
 async function columnExists(tableName, columnName) {
+  if (!(await tableExists(tableName))) {
+    return false;
+  }
   const cols = await dbAll(`PRAGMA table_info(${tableName})`);
   return cols.some((c) => c.name === columnName);
+}
+
+function getLanUrls(port) {
+  const interfaces = os.networkInterfaces();
+  const urls = [];
+
+  Object.values(interfaces).forEach((ifaceList) => {
+    (ifaceList || []).forEach((iface) => {
+      if (iface && iface.family === "IPv4" && !iface.internal) {
+        urls.push(`http://${iface.address}:${port}`);
+      }
+    });
+  });
+
+  return [...new Set(urls)];
+}
+
+async function getNextCode(tableName, columnName, prefix, padding) {
+  const row = await dbGet(
+    `SELECT ${columnName} AS code FROM ${tableName} WHERE ${columnName} LIKE ? ORDER BY ${columnName} DESC LIMIT 1`,
+    [`${prefix}%`]
+  );
+
+  if (!row || !row.code) {
+    return `${prefix}${String(1).padStart(padding, "0")}`;
+  }
+
+  const raw = String(row.code).slice(prefix.length);
+  const current = Number.parseInt(raw, 10);
+  const next = Number.isFinite(current) ? current + 1 : 1;
+  return `${prefix}${String(next).padStart(padding, "0")}`;
+}
+
+async function migrateIdPrimaryKeysToCodeIfNeeded() {
+  const needsMigration = await columnExists("ban_an", "id");
+  if (!needsMigration) {
+    return;
+  }
+
+  await dbRun("PRAGMA foreign_keys = OFF");
+  await dbRun("BEGIN TRANSACTION");
+
+  try {
+    await dbRun(`
+      CREATE TABLE nhan_vien_new (
+        ma_nhan_vien TEXT PRIMARY KEY,
+        ten_dang_nhap TEXT NOT NULL UNIQUE,
+        mat_khau TEXT NOT NULL,
+        vai_tro TEXT NOT NULL,
+        so_lan_sai INTEGER NOT NULL DEFAULT 0,
+        khoa_den INTEGER,
+        thoi_gian_dang_nhap TEXT,
+        thoi_gian_dang_xuat TEXT
+      )
+    `);
+
+    await dbRun(`
+      INSERT INTO nhan_vien_new (
+        ma_nhan_vien,
+        ten_dang_nhap,
+        mat_khau,
+        vai_tro,
+        so_lan_sai,
+        khoa_den,
+        thoi_gian_dang_nhap,
+        thoi_gian_dang_xuat
+      )
+      SELECT
+        printf('NV%03d', id),
+        ten_dang_nhap,
+        mat_khau,
+        vai_tro,
+        COALESCE(so_lan_sai, 0),
+        khoa_den,
+        CASE
+          WHEN thoi_gian_dang_nhap IS NULL THEN NULL
+          WHEN typeof(thoi_gian_dang_nhap) IN ('integer', 'real') THEN datetime(thoi_gian_dang_nhap / 1000, 'unixepoch', 'localtime')
+          ELSE thoi_gian_dang_nhap
+        END,
+        CASE
+          WHEN thoi_gian_dang_xuat IS NULL THEN NULL
+          WHEN typeof(thoi_gian_dang_xuat) IN ('integer', 'real') THEN datetime(thoi_gian_dang_xuat / 1000, 'unixepoch', 'localtime')
+          ELSE thoi_gian_dang_xuat
+        END
+      FROM nhan_vien
+    `);
+
+    await dbRun(`
+      CREATE TABLE ban_an_new (
+        ma_ban TEXT PRIMARY KEY,
+        ten_ban TEXT NOT NULL UNIQUE,
+        trang_thai TEXT NOT NULL
+      )
+    `);
+
+    await dbRun(`
+      INSERT INTO ban_an_new (ma_ban, ten_ban, trang_thai)
+      SELECT
+        printf('BA%02d', id),
+        CASE
+          WHEN ten_ban LIKE 'Ban %' THEN REPLACE(ten_ban, 'Ban ', 'Bàn ')
+          ELSE ten_ban
+        END,
+        trang_thai
+      FROM ban_an
+      ORDER BY id
+    `);
+
+    await dbRun(`
+      CREATE TABLE mon_an_new (
+        ma_mon TEXT PRIMARY KEY,
+        ten_mon TEXT NOT NULL,
+        gia INTEGER NOT NULL
+      )
+    `);
+
+    await dbRun(`
+      INSERT INTO mon_an_new (ma_mon, ten_mon, gia)
+      SELECT
+        CASE
+          WHEN ma_mon IS NOT NULL AND TRIM(ma_mon) <> '' THEN ma_mon
+          ELSE printf('MA%03d', id)
+        END,
+        ten_mon,
+        gia
+      FROM mon_an
+      ORDER BY id
+    `);
+
+    await dbRun(`
+      CREATE TABLE nguyen_lieu_new (
+        ma_nguyen_lieu TEXT PRIMARY KEY,
+        ten_nguyen_lieu TEXT NOT NULL,
+        so_luong_ton INTEGER NOT NULL,
+        don_vi TEXT NOT NULL
+      )
+    `);
+
+    await dbRun(`
+      INSERT INTO nguyen_lieu_new (ma_nguyen_lieu, ten_nguyen_lieu, so_luong_ton, don_vi)
+      SELECT
+        CASE
+          WHEN ma_nguyen_lieu IS NOT NULL AND TRIM(ma_nguyen_lieu) <> '' THEN ma_nguyen_lieu
+          ELSE printf('NL%03d', id)
+        END,
+        ten_nguyen_lieu,
+        so_luong_ton,
+        don_vi
+      FROM nguyen_lieu
+      ORDER BY id
+    `);
+
+    await dbRun(`
+      CREATE TABLE don_hang_new (
+        ma_don_hang TEXT PRIMARY KEY,
+        ma_ban TEXT NOT NULL,
+        ma_mon TEXT NOT NULL,
+        ma_nhan_vien TEXT,
+        ten_mon TEXT NOT NULL,
+        so_luong INTEGER NOT NULL,
+        don_gia INTEGER NOT NULL,
+        trang_thai TEXT NOT NULL,
+        thoi_gian_tao TEXT NOT NULL,
+        FOREIGN KEY(ma_ban) REFERENCES ban_an(ma_ban),
+        FOREIGN KEY(ma_mon) REFERENCES mon_an(ma_mon),
+        FOREIGN KEY(ma_nhan_vien) REFERENCES nhan_vien(ma_nhan_vien)
+      )
+    `);
+
+    await dbRun(`
+      INSERT INTO don_hang_new (
+        ma_don_hang,
+        ma_ban,
+        ma_mon,
+        ma_nhan_vien,
+        ten_mon,
+        so_luong,
+        don_gia,
+        trang_thai,
+        thoi_gian_tao
+      )
+      SELECT
+        printf('DH%05d', d.id),
+        printf('BA%02d', d.ma_ban),
+        COALESCE(m.ma_mon, printf('MA%03d', d.ma_mon)),
+        CASE
+          WHEN d.ma_nhan_vien IS NULL THEN NULL
+          ELSE printf('NV%03d', d.ma_nhan_vien)
+        END,
+        d.ten_mon,
+        d.so_luong,
+        d.don_gia,
+        d.trang_thai,
+        CASE
+          WHEN d.thoi_gian_tao IS NULL THEN datetime('now', 'localtime')
+          WHEN typeof(d.thoi_gian_tao) IN ('integer', 'real') THEN datetime(d.thoi_gian_tao / 1000, 'unixepoch', 'localtime')
+          ELSE d.thoi_gian_tao
+        END
+      FROM don_hang d
+      LEFT JOIN mon_an m ON m.id = d.ma_mon
+      ORDER BY d.id
+    `);
+
+    await dbRun(`
+      CREATE TABLE hoa_don_new (
+        ma_hoa_don TEXT PRIMARY KEY,
+        ma_ban TEXT NOT NULL,
+        ma_nhan_vien TEXT,
+        tam_tinh INTEGER NOT NULL,
+        giam_gia INTEGER NOT NULL,
+        thanh_tien INTEGER NOT NULL,
+        thoi_gian_tao TEXT NOT NULL,
+        FOREIGN KEY(ma_ban) REFERENCES ban_an(ma_ban),
+        FOREIGN KEY(ma_nhan_vien) REFERENCES nhan_vien(ma_nhan_vien)
+      )
+    `);
+
+    await dbRun(`
+      INSERT INTO hoa_don_new (
+        ma_hoa_don,
+        ma_ban,
+        ma_nhan_vien,
+        tam_tinh,
+        giam_gia,
+        thanh_tien,
+        thoi_gian_tao
+      )
+      SELECT
+        printf('HD%05d', h.id),
+        printf('BA%02d', h.ma_ban),
+        CASE
+          WHEN h.ma_nhan_vien IS NULL THEN NULL
+          ELSE printf('NV%03d', h.ma_nhan_vien)
+        END,
+        h.tam_tinh,
+        h.giam_gia,
+        h.thanh_tien,
+        CASE
+          WHEN h.thoi_gian_tao IS NULL THEN datetime('now', 'localtime')
+          WHEN typeof(h.thoi_gian_tao) IN ('integer', 'real') THEN datetime(h.thoi_gian_tao / 1000, 'unixepoch', 'localtime')
+          ELSE h.thoi_gian_tao
+        END
+      FROM hoa_don h
+      ORDER BY h.id
+    `);
+
+    await dbRun(`
+      CREATE TABLE mon_an_nguyen_lieu_new (
+        ma_mon TEXT NOT NULL,
+        ma_nguyen_lieu TEXT NOT NULL,
+        so_luong_su_dung INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (ma_mon, ma_nguyen_lieu),
+        FOREIGN KEY(ma_mon) REFERENCES mon_an(ma_mon),
+        FOREIGN KEY(ma_nguyen_lieu) REFERENCES nguyen_lieu(ma_nguyen_lieu)
+      )
+    `);
+
+    await dbRun(`
+      INSERT OR IGNORE INTO mon_an_nguyen_lieu_new (ma_mon, ma_nguyen_lieu, so_luong_su_dung)
+      SELECT
+        COALESCE(m.ma_mon, printf('MA%03d', manl.ma_mon)),
+        COALESCE(nl.ma_nguyen_lieu, printf('NL%03d', manl.ma_nguyen_lieu)),
+        manl.so_luong_su_dung
+      FROM mon_an_nguyen_lieu manl
+      LEFT JOIN mon_an m ON m.id = manl.ma_mon
+      LEFT JOIN nguyen_lieu nl ON nl.id = manl.ma_nguyen_lieu
+    `);
+
+    await dbRun(`
+      CREATE TABLE thong_ke_he_thong_new (
+        ma_thong_ke TEXT PRIMARY KEY,
+        so_nhan_vien INTEGER NOT NULL DEFAULT 0,
+        so_mon_an INTEGER NOT NULL DEFAULT 0,
+        so_ban_an INTEGER NOT NULL DEFAULT 0,
+        so_nguyen_lieu INTEGER NOT NULL DEFAULT 0,
+        so_hoa_don INTEGER NOT NULL DEFAULT 0,
+        so_don_hang INTEGER NOT NULL DEFAULT 0,
+        thoi_gian_cap_nhat TEXT NOT NULL
+      )
+    `);
+
+    if (await tableExists("thong_ke_he_thong")) {
+      await dbRun(`
+        INSERT INTO thong_ke_he_thong_new (
+          ma_thong_ke,
+          so_nhan_vien,
+          so_mon_an,
+          so_ban_an,
+          so_nguyen_lieu,
+          so_hoa_don,
+          so_don_hang,
+          thoi_gian_cap_nhat
+        )
+        SELECT
+          'TK001',
+          so_nhan_vien,
+          so_mon_an,
+          so_ban_an,
+          so_nguyen_lieu,
+          so_hoa_don,
+          so_don_hang,
+          CASE
+            WHEN thoi_gian_cap_nhat IS NULL THEN datetime('now', 'localtime')
+            WHEN typeof(thoi_gian_cap_nhat) IN ('integer', 'real') THEN datetime(thoi_gian_cap_nhat / 1000, 'unixepoch', 'localtime')
+            ELSE thoi_gian_cap_nhat
+          END
+        FROM thong_ke_he_thong
+        LIMIT 1
+      `);
+    }
+
+    const thongKeCount = await dbGet("SELECT COUNT(*) AS count FROM thong_ke_he_thong_new");
+    if (!thongKeCount || Number(thongKeCount.count) === 0) {
+      await dbRun(
+        `
+        INSERT INTO thong_ke_he_thong_new (
+          ma_thong_ke,
+          so_nhan_vien,
+          so_mon_an,
+          so_ban_an,
+          so_nguyen_lieu,
+          so_hoa_don,
+          so_don_hang,
+          thoi_gian_cap_nhat
+        )
+        VALUES ('TK001', 0, 0, 0, 0, 0, 0, datetime('now', 'localtime'))
+        `
+      );
+    }
+
+    const dropTables = [
+      "mon_an_nguyen_lieu",
+      "don_hang",
+      "hoa_don",
+      "ban_an",
+      "mon_an",
+      "nguyen_lieu",
+      "nhan_vien",
+      "thong_ke_he_thong"
+    ];
+
+    for (const tableName of dropTables) {
+      if (await tableExists(tableName)) {
+        await dbRun(`DROP TABLE ${tableName}`);
+      }
+    }
+
+    await dbRun("ALTER TABLE nhan_vien_new RENAME TO nhan_vien");
+    await dbRun("ALTER TABLE ban_an_new RENAME TO ban_an");
+    await dbRun("ALTER TABLE mon_an_new RENAME TO mon_an");
+    await dbRun("ALTER TABLE nguyen_lieu_new RENAME TO nguyen_lieu");
+    await dbRun("ALTER TABLE don_hang_new RENAME TO don_hang");
+    await dbRun("ALTER TABLE hoa_don_new RENAME TO hoa_don");
+    await dbRun("ALTER TABLE mon_an_nguyen_lieu_new RENAME TO mon_an_nguyen_lieu");
+    await dbRun("ALTER TABLE thong_ke_he_thong_new RENAME TO thong_ke_he_thong");
+
+    await dbRun("COMMIT");
+  } catch (error) {
+    await dbRun("ROLLBACK");
+    throw error;
+  } finally {
+    await dbRun("PRAGMA foreign_keys = ON");
+  }
+}
+
+async function ensureCodeSchema() {
+  await dbRun(`
+    CREATE TABLE IF NOT EXISTS nhan_vien (
+      ma_nhan_vien TEXT PRIMARY KEY,
+      ten_dang_nhap TEXT NOT NULL UNIQUE,
+      mat_khau TEXT NOT NULL,
+      vai_tro TEXT NOT NULL,
+      so_lan_sai INTEGER NOT NULL DEFAULT 0,
+      khoa_den INTEGER,
+      thoi_gian_dang_nhap TEXT,
+      thoi_gian_dang_xuat TEXT
+    )
+  `);
+
+  await dbRun(`
+    CREATE TABLE IF NOT EXISTS ban_an (
+      ma_ban TEXT PRIMARY KEY,
+      ten_ban TEXT NOT NULL UNIQUE,
+      trang_thai TEXT NOT NULL
+    )
+  `);
+
+  await dbRun(`
+    CREATE TABLE IF NOT EXISTS mon_an (
+      ma_mon TEXT PRIMARY KEY,
+      ten_mon TEXT NOT NULL,
+      gia INTEGER NOT NULL
+    )
+  `);
+
+  await dbRun(`
+    CREATE TABLE IF NOT EXISTS nguyen_lieu (
+      ma_nguyen_lieu TEXT PRIMARY KEY,
+      ten_nguyen_lieu TEXT NOT NULL,
+      so_luong_ton INTEGER NOT NULL,
+      don_vi TEXT NOT NULL
+    )
+  `);
+
+  await dbRun(`
+    CREATE TABLE IF NOT EXISTS mon_an_nguyen_lieu (
+      ma_mon TEXT NOT NULL,
+      ma_nguyen_lieu TEXT NOT NULL,
+      so_luong_su_dung INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (ma_mon, ma_nguyen_lieu),
+      FOREIGN KEY(ma_mon) REFERENCES mon_an(ma_mon),
+      FOREIGN KEY(ma_nguyen_lieu) REFERENCES nguyen_lieu(ma_nguyen_lieu)
+    )
+  `);
+
+  await dbRun(`
+    CREATE TABLE IF NOT EXISTS don_hang (
+      ma_don_hang TEXT PRIMARY KEY,
+      ma_ban TEXT NOT NULL,
+      ma_mon TEXT NOT NULL,
+      ma_nhan_vien TEXT,
+      ten_mon TEXT NOT NULL,
+      so_luong INTEGER NOT NULL,
+      don_gia INTEGER NOT NULL,
+      trang_thai TEXT NOT NULL,
+      thoi_gian_tao TEXT NOT NULL,
+      FOREIGN KEY(ma_ban) REFERENCES ban_an(ma_ban),
+      FOREIGN KEY(ma_mon) REFERENCES mon_an(ma_mon),
+      FOREIGN KEY(ma_nhan_vien) REFERENCES nhan_vien(ma_nhan_vien)
+    )
+  `);
+
+  await dbRun(`
+    CREATE TABLE IF NOT EXISTS hoa_don (
+      ma_hoa_don TEXT PRIMARY KEY,
+      ma_ban TEXT NOT NULL,
+      ma_nhan_vien TEXT,
+      tam_tinh INTEGER NOT NULL,
+      giam_gia INTEGER NOT NULL,
+      thanh_tien INTEGER NOT NULL,
+      thoi_gian_tao TEXT NOT NULL,
+      FOREIGN KEY(ma_ban) REFERENCES ban_an(ma_ban),
+      FOREIGN KEY(ma_nhan_vien) REFERENCES nhan_vien(ma_nhan_vien)
+    )
+  `);
+
+  await dbRun(`
+    CREATE TABLE IF NOT EXISTS thong_ke_he_thong (
+      ma_thong_ke TEXT PRIMARY KEY,
+      so_nhan_vien INTEGER NOT NULL DEFAULT 0,
+      so_mon_an INTEGER NOT NULL DEFAULT 0,
+      so_ban_an INTEGER NOT NULL DEFAULT 0,
+      so_nguyen_lieu INTEGER NOT NULL DEFAULT 0,
+      so_hoa_don INTEGER NOT NULL DEFAULT 0,
+      so_don_hang INTEGER NOT NULL DEFAULT 0,
+      thoi_gian_cap_nhat TEXT NOT NULL
+    )
+  `);
+}
+
+async function seedDefaultRecipes() {
+  for (const [dishCode, recipeItems] of Object.entries(DEFAULT_RECIPE_MAP)) {
+    const mon = await dbGet("SELECT ma_mon FROM mon_an WHERE ma_mon = ?", [dishCode]);
+    if (!mon) {
+      continue;
+    }
+
+    for (const item of recipeItems) {
+      const nguyenLieu = await dbGet("SELECT ma_nguyen_lieu FROM nguyen_lieu WHERE ma_nguyen_lieu = ?", [item.ingredientCode]);
+      if (!nguyenLieu) {
+        continue;
+      }
+
+      await dbRun(
+        `
+        INSERT INTO mon_an_nguyen_lieu (ma_mon, ma_nguyen_lieu, so_luong_su_dung)
+        VALUES (?, ?, ?)
+        ON CONFLICT(ma_mon, ma_nguyen_lieu)
+        DO UPDATE SET so_luong_su_dung = excluded.so_luong_su_dung
+        `,
+        [dishCode, item.ingredientCode, Number(item.usageQty)]
+      );
+    }
+  }
+}
+
+async function seedDefaults() {
+  const userCount = await dbGet("SELECT COUNT(*) AS count FROM nhan_vien");
+  if (Number(userCount.count) === 0) {
+    await dbRun(
+      `
+      INSERT INTO nhan_vien (ma_nhan_vien, ten_dang_nhap, mat_khau, vai_tro)
+      VALUES
+        ('NV001', 'manager', '123456', 'manager'),
+        ('NV002', 'waiter', '123456', 'waiter'),
+        ('NV003', 'cashier', '123456', 'cashier')
+      `
+    );
+  }
+
+  const tableCount = await dbGet("SELECT COUNT(*) AS count FROM ban_an");
+  if (Number(tableCount.count) === 0) {
+    for (let i = 1; i <= 8; i += 1) {
+      const maBan = `BA${String(i).padStart(2, "0")}`;
+      await dbRun("INSERT INTO ban_an (ma_ban, ten_ban, trang_thai) VALUES (?, ?, ?)", [maBan, `Bàn ${i}`, "trong"]);
+    }
+  }
+
+  await dbRun("UPDATE ban_an SET ten_ban = REPLACE(ten_ban, 'Ban ', 'Bàn ') WHERE ten_ban LIKE 'Ban %'");
+
+  for (const item of DEFAULT_MENU_ITEMS) {
+    await dbRun(
+      `
+      INSERT INTO mon_an (ma_mon, ten_mon, gia)
+      VALUES (?, ?, ?)
+      ON CONFLICT(ma_mon)
+      DO UPDATE SET ten_mon = excluded.ten_mon, gia = excluded.gia
+      `,
+      [item.code, item.name, item.price]
+    );
+  }
+
+  for (const item of DEFAULT_INGREDIENTS) {
+    await dbRun(
+      `
+      INSERT INTO nguyen_lieu (ma_nguyen_lieu, ten_nguyen_lieu, so_luong_ton, don_vi)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(ma_nguyen_lieu)
+      DO UPDATE SET ten_nguyen_lieu = excluded.ten_nguyen_lieu, don_vi = excluded.don_vi
+      `,
+      [item.code, item.name, item.qty, item.unit]
+    );
+  }
+
+  await seedDefaultRecipes();
+
+  await dbRun(`
+    UPDATE don_hang
+    SET ten_mon = COALESCE((SELECT ten_mon FROM mon_an WHERE mon_an.ma_mon = don_hang.ma_mon), ten_mon)
+  `);
+
+  const thongKeCount = await dbGet("SELECT COUNT(*) AS count FROM thong_ke_he_thong WHERE ma_thong_ke = 'TK001'");
+  if (!thongKeCount || Number(thongKeCount.count) === 0) {
+    await dbRun(
+      `
+      INSERT INTO thong_ke_he_thong (
+        ma_thong_ke,
+        so_nhan_vien,
+        so_mon_an,
+        so_ban_an,
+        so_nguyen_lieu,
+        so_hoa_don,
+        so_don_hang,
+        thoi_gian_cap_nhat
+      )
+      VALUES ('TK001', 0, 0, 0, 0, 0, 0, datetime('now', 'localtime'))
+      `
+    );
+  }
+
+  await dbRun(`
+    UPDATE thong_ke_he_thong
+    SET
+      so_nhan_vien = (SELECT COUNT(*) FROM nhan_vien),
+      so_mon_an = (SELECT COUNT(*) FROM mon_an),
+      so_ban_an = (SELECT COUNT(*) FROM ban_an),
+      so_nguyen_lieu = (SELECT COUNT(*) FROM nguyen_lieu),
+      so_hoa_don = (SELECT COUNT(*) FROM hoa_don),
+      so_don_hang = (SELECT COUNT(*) FROM don_hang),
+      thoi_gian_cap_nhat = datetime('now', 'localtime')
+    WHERE ma_thong_ke = 'TK001'
+  `);
+}
+
+async function initDb() {
+  await migrateIdPrimaryKeysToCodeIfNeeded();
+  await ensureCodeSchema();
+  await seedDefaults();
 }
 
 async function tinhTrangThaiBanTheoDon(maBan) {
@@ -200,312 +786,46 @@ async function tinhTrangThaiBanTheoDon(maBan) {
 }
 
 async function dongBoTrangThaiTatCaBan() {
-  const bans = await dbAll("SELECT id FROM ban_an ORDER BY id");
+  const bans = await dbAll("SELECT ma_ban FROM ban_an ORDER BY ma_ban");
   for (const ban of bans) {
-    const trangThai = await tinhTrangThaiBanTheoDon(ban.id);
-    await dbRun("UPDATE ban_an SET trang_thai = ? WHERE id = ?", [trangThai, ban.id]);
+    const trangThai = await tinhTrangThaiBanTheoDon(ban.ma_ban);
+    await dbRun("UPDATE ban_an SET trang_thai = ? WHERE ma_ban = ?", [trangThai, ban.ma_ban]);
   }
-}
-
-async function tableExists(tableName) {
-  const row = await dbGet("SELECT name FROM sqlite_master WHERE type='table' AND name = ?", [tableName]);
-  return Boolean(row);
-}
-
-async function migrateOldSchemaIfNeeded() {
-  const hasOldUsers = await tableExists("users");
-  const hasOldTables = await tableExists("dining_tables");
-  const hasOldMenu = await tableExists("menu_items");
-  const hasOldOrders = await tableExists("orders");
-  const hasOldRevenue = await tableExists("revenue_log");
-
-  const newUsersCount = await dbGet("SELECT COUNT(*) AS count FROM nhan_vien");
-  if (hasOldUsers && newUsersCount.count === 0) {
-    await dbRun(`
-      INSERT INTO nhan_vien (ten_dang_nhap, mat_khau, vai_tro, so_lan_sai, khoa_den)
-      SELECT username, password, role, failed_attempts, lock_until
-      FROM users
-    `);
-  }
-
-  const newTablesCount = await dbGet("SELECT COUNT(*) AS count FROM ban_an");
-  if (hasOldTables && newTablesCount.count === 0) {
-    await dbRun(`
-      INSERT INTO ban_an (ten_ban, trang_thai)
-      SELECT name, status
-      FROM dining_tables
-    `);
-  }
-
-  const newMenuCount = await dbGet("SELECT COUNT(*) AS count FROM mon_an");
-  if (hasOldMenu && newMenuCount.count === 0) {
-    await dbRun(`
-      INSERT INTO mon_an (ma_mon, ten_mon, gia)
-      SELECT code, name, price
-      FROM menu_items
-    `);
-  }
-
-  const newOrdersCount = await dbGet("SELECT COUNT(*) AS count FROM don_hang");
-  if (hasOldOrders && newOrdersCount.count === 0) {
-    await dbRun(`
-      INSERT INTO don_hang (ma_ban, ma_mon, ten_mon, so_luong, don_gia, trang_thai, thoi_gian_tao)
-      SELECT table_id, menu_id, menu_name, qty, price, status, created_at
-      FROM orders
-    `);
-  }
-
-  const newBillsCount = await dbGet("SELECT COUNT(*) AS count FROM hoa_don");
-  if (hasOldRevenue && newBillsCount.count === 0) {
-    await dbRun(`
-      INSERT INTO hoa_don (ma_ban, tam_tinh, giam_gia, thanh_tien, thoi_gian_tao)
-      SELECT 0, amount, 0, amount, created_at
-      FROM revenue_log
-    `);
-  }
-}
-
-async function migrateLoginLogoutTimestampFormat() {
-  await dbRun(`
-    UPDATE nhan_vien
-    SET thoi_gian_dang_nhap = datetime(thoi_gian_dang_nhap / 1000, 'unixepoch', 'localtime')
-    WHERE thoi_gian_dang_nhap IS NOT NULL
-      AND typeof(thoi_gian_dang_nhap) IN ('integer', 'real')
-  `);
-
-  await dbRun(`
-    UPDATE nhan_vien
-    SET thoi_gian_dang_xuat = datetime(thoi_gian_dang_xuat / 1000, 'unixepoch', 'localtime')
-    WHERE thoi_gian_dang_xuat IS NOT NULL
-      AND typeof(thoi_gian_dang_xuat) IN ('integer', 'real')
-  `);
-}
-
-async function migrateOtherTimestampFormat() {
-  await dbRun(`
-    UPDATE don_hang
-    SET thoi_gian_tao = datetime(thoi_gian_tao / 1000, 'unixepoch', 'localtime')
-    WHERE thoi_gian_tao IS NOT NULL
-      AND typeof(thoi_gian_tao) IN ('integer', 'real')
-  `);
-
-  await dbRun(`
-    UPDATE hoa_don
-    SET thoi_gian_tao = datetime(thoi_gian_tao / 1000, 'unixepoch', 'localtime')
-    WHERE thoi_gian_tao IS NOT NULL
-      AND typeof(thoi_gian_tao) IN ('integer', 'real')
-  `);
-
-  const hasThongKe = await tableExists("thong_ke_he_thong");
-  if (hasThongKe) {
-    if (await columnExists("thong_ke_he_thong", "cap_nhat_luc")) {
-      await dbRun(`
-        UPDATE thong_ke_he_thong
-        SET cap_nhat_luc = datetime(cap_nhat_luc / 1000, 'unixepoch', 'localtime')
-        WHERE cap_nhat_luc IS NOT NULL
-          AND typeof(cap_nhat_luc) IN ('integer', 'real')
-      `);
-    }
-
-    if (await columnExists("thong_ke_he_thong", "thoi_gian_cap_nhat")) {
-      await dbRun(`
-        UPDATE thong_ke_he_thong
-        SET thoi_gian_cap_nhat = datetime(thoi_gian_cap_nhat / 1000, 'unixepoch', 'localtime')
-        WHERE thoi_gian_cap_nhat IS NOT NULL
-          AND typeof(thoi_gian_cap_nhat) IN ('integer', 'real')
-      `);
-    }
-  }
-}
-
-async function renameThongKeTimestampColumnIfNeeded() {
-  const hasThongKe = await tableExists("thong_ke_he_thong");
-  if (!hasThongKe) {
-    return;
-  }
-
-  const hasOld = await columnExists("thong_ke_he_thong", "cap_nhat_luc");
-  const hasNew = await columnExists("thong_ke_he_thong", "thoi_gian_cap_nhat");
-  if (hasOld && !hasNew) {
-    await dbRun("ALTER TABLE thong_ke_he_thong RENAME COLUMN cap_nhat_luc TO thoi_gian_cap_nhat");
-  }
-}
-
-async function seedDefaultRecipes() {
-  for (const [dishCode, recipeItems] of Object.entries(DEFAULT_RECIPE_MAP)) {
-    const mon = await dbGet("SELECT id FROM mon_an WHERE ma_mon = ?", [dishCode]);
-    if (!mon) {
-      continue;
-    }
-
-    for (const item of recipeItems) {
-      const nguyenLieu = await dbGet("SELECT id FROM nguyen_lieu WHERE ma_nguyen_lieu = ?", [item.ingredientCode]);
-      if (!nguyenLieu) {
-        continue;
-      }
-
-      await dbRun(
-        `
-        INSERT INTO mon_an_nguyen_lieu (ma_mon, ma_nguyen_lieu, so_luong_su_dung)
-        VALUES (?, ?, ?)
-        ON CONFLICT(ma_mon, ma_nguyen_lieu)
-        DO UPDATE SET so_luong_su_dung = excluded.so_luong_su_dung
-        `,
-        [mon.id, nguyenLieu.id, Number(item.usageQty)]
-      );
-    }
-  }
-}
-
-async function initDb() {
-  // Khởi tạo toàn bộ bảng nghiệp vụ, cột bổ sung và dữ liệu mặc định.
-  await dbRun(`
-    CREATE TABLE IF NOT EXISTS nhan_vien (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      ten_dang_nhap TEXT NOT NULL UNIQUE,
-      mat_khau TEXT NOT NULL,
-      vai_tro TEXT NOT NULL,
-      so_lan_sai INTEGER NOT NULL DEFAULT 0,
-      khoa_den INTEGER,
-      thoi_gian_dang_nhap TEXT,
-      thoi_gian_dang_xuat TEXT
-    )
-  `);
-
-  if (!(await columnExists("nhan_vien", "thoi_gian_dang_nhap"))) {
-    await dbRun("ALTER TABLE nhan_vien ADD COLUMN thoi_gian_dang_nhap TEXT");
-  }
-  if (!(await columnExists("nhan_vien", "thoi_gian_dang_xuat"))) {
-    await dbRun("ALTER TABLE nhan_vien ADD COLUMN thoi_gian_dang_xuat TEXT");
-  }
-
-  await migrateLoginLogoutTimestampFormat();
-
-  await dbRun(`
-    CREATE TABLE IF NOT EXISTS ban_an (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      ten_ban TEXT NOT NULL UNIQUE,
-      trang_thai TEXT NOT NULL
-    )
-  `);
-
-  await dbRun(`
-    CREATE TABLE IF NOT EXISTS mon_an (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      ma_mon TEXT NOT NULL UNIQUE,
-      ten_mon TEXT NOT NULL,
-      gia INTEGER NOT NULL
-    )
-  `);
-
-  await dbRun(`
-    CREATE TABLE IF NOT EXISTS don_hang (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      ma_ban INTEGER NOT NULL,
-      ma_mon INTEGER NOT NULL,
-      ma_nhan_vien INTEGER,
-      ten_mon TEXT NOT NULL,
-      so_luong INTEGER NOT NULL,
-      don_gia INTEGER NOT NULL,
-      trang_thai TEXT NOT NULL,
-      thoi_gian_tao TEXT NOT NULL,
-      FOREIGN KEY(ma_ban) REFERENCES ban_an(id),
-      FOREIGN KEY(ma_mon) REFERENCES mon_an(id),
-      FOREIGN KEY(ma_nhan_vien) REFERENCES nhan_vien(id)
-    )
-  `);
-
-  if (!(await columnExists("don_hang", "ma_nhan_vien"))) {
-    await dbRun("ALTER TABLE don_hang ADD COLUMN ma_nhan_vien INTEGER");
-  }
-
-  await dbRun(`
-    CREATE TABLE IF NOT EXISTS hoa_don (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      ma_ban INTEGER NOT NULL,
-      ma_nhan_vien INTEGER,
-      tam_tinh INTEGER NOT NULL,
-      giam_gia INTEGER NOT NULL,
-      thanh_tien INTEGER NOT NULL,
-      thoi_gian_tao TEXT NOT NULL,
-      FOREIGN KEY(ma_ban) REFERENCES ban_an(id),
-      FOREIGN KEY(ma_nhan_vien) REFERENCES nhan_vien(id)
-    )
-  `);
-
-  if (!(await columnExists("hoa_don", "ma_nhan_vien"))) {
-    await dbRun("ALTER TABLE hoa_don ADD COLUMN ma_nhan_vien INTEGER");
-  }
-
-  await dbRun(`
-    CREATE TABLE IF NOT EXISTS nguyen_lieu (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      ma_nguyen_lieu TEXT NOT NULL UNIQUE,
-      ten_nguyen_lieu TEXT NOT NULL,
-      so_luong_ton INTEGER NOT NULL,
-      don_vi TEXT NOT NULL
-    )
-  `);
-
-  await dbRun(`
-    CREATE TABLE IF NOT EXISTS mon_an_nguyen_lieu (
-      ma_mon INTEGER NOT NULL,
-      ma_nguyen_lieu INTEGER NOT NULL,
-      so_luong_su_dung INTEGER NOT NULL DEFAULT 0,
-      PRIMARY KEY (ma_mon, ma_nguyen_lieu),
-      FOREIGN KEY(ma_mon) REFERENCES mon_an(id),
-      FOREIGN KEY(ma_nguyen_lieu) REFERENCES nguyen_lieu(id)
-    )
-  `);
-
-  await migrateOldSchemaIfNeeded();
-  await migrateOtherTimestampFormat();
-  await renameThongKeTimestampColumnIfNeeded();
-
-  const userCount = await dbGet("SELECT COUNT(*) AS count FROM nhan_vien");
-  if (userCount.count === 0) {
-    await dbRun(
-      "INSERT INTO nhan_vien (ten_dang_nhap, mat_khau, vai_tro) VALUES (?, ?, ?), (?, ?, ?), (?, ?, ?)",
-      ["manager", "123456", "manager", "waiter", "123456", "waiter", "cashier", "123456", "cashier"]
-    );
-  }
-
-  const tableCount = await dbGet("SELECT COUNT(*) AS count FROM ban_an");
-  if (tableCount.count === 0) {
-    for (let i = 1; i <= 8; i += 1) {
-      await dbRun("INSERT INTO ban_an (ten_ban, trang_thai) VALUES (?, ?)", [`Bàn ${i}`, "trong"]);
-    }
-  }
-
-  for (const item of DEFAULT_MENU_ITEMS) {
-    await dbRun(
-      "INSERT OR IGNORE INTO mon_an (ma_mon, ten_mon, gia) VALUES (?, ?, ?)",
-      [item.code, item.name, item.price]
-    );
-  }
-
-  for (const item of DEFAULT_INGREDIENTS) {
-    await dbRun(
-      "INSERT OR IGNORE INTO nguyen_lieu (ma_nguyen_lieu, ten_nguyen_lieu, so_luong_ton, don_vi) VALUES (?, ?, ?, ?)",
-      [item.code, item.name, item.qty, item.unit]
-    );
-  }
-
-  await seedDefaultRecipes();
 }
 
 app.use(express.json());
 app.use(express.static(__dirname));
 
 app.get("/api/trang-thai", async (req, res) => {
-  // Nạp trạng thái tổng hợp cho frontend: bàn, món, đơn, kho, doanh thu.
   try {
     await dongBoTrangThaiTatCaBan();
-    const tables = await dbAll("SELECT id, ten_ban AS name, trang_thai AS status FROM ban_an ORDER BY id");
-    const menu = await dbAll("SELECT id, ma_mon AS code, ten_mon AS name, gia AS price FROM mon_an ORDER BY id");
-    const orders = await dbAll("SELECT id, ma_ban AS tableId, ma_mon AS menuId, ten_mon AS menuName, so_luong AS qty, don_gia AS price, trang_thai AS status FROM don_hang ORDER BY id");
-    const ingredients = await dbAll("SELECT id, ma_nguyen_lieu AS code, ten_nguyen_lieu AS name, so_luong_ton AS qty, don_vi AS unit FROM nguyen_lieu ORDER BY ten_nguyen_lieu");
+
+    const tables = await dbAll(
+      "SELECT ma_ban AS id, ma_ban AS code, ten_ban AS name, trang_thai AS status FROM ban_an ORDER BY ma_ban"
+    );
+    const menu = await dbAll(
+      "SELECT ma_mon AS id, ma_mon AS code, ten_mon AS name, gia AS price FROM mon_an ORDER BY ma_mon"
+    );
+    const orders = await dbAll(
+      `
+      SELECT
+        ma_don_hang AS id,
+        ma_ban AS tableId,
+        ma_mon AS menuId,
+        ten_mon AS menuName,
+        so_luong AS qty,
+        don_gia AS price,
+        trang_thai AS status,
+        thoi_gian_tao AS createdAt
+      FROM don_hang
+      ORDER BY ma_don_hang
+      `
+    );
+    const ingredients = await dbAll(
+      "SELECT ma_nguyen_lieu AS id, ma_nguyen_lieu AS code, ten_nguyen_lieu AS name, so_luong_ton AS qty, don_vi AS unit FROM nguyen_lieu ORDER BY ten_nguyen_lieu"
+    );
     const rev = await dbGet("SELECT COALESCE(SUM(thanh_tien), 0) AS total FROM hoa_don");
+
     res.json({ tables, menu, orders, ingredients, revenue: rev.total });
   } catch (error) {
     res.status(500).json({ message: "Khong tai duoc du lieu he thong." });
@@ -515,7 +835,7 @@ app.get("/api/trang-thai", async (req, res) => {
 app.get("/api/nguyen-lieu", async (req, res) => {
   try {
     const ingredients = await dbAll(
-      "SELECT id, ma_nguyen_lieu AS code, ten_nguyen_lieu AS name, so_luong_ton AS qty, don_vi AS unit FROM nguyen_lieu ORDER BY ten_nguyen_lieu"
+      "SELECT ma_nguyen_lieu AS id, ma_nguyen_lieu AS code, ten_nguyen_lieu AS name, so_luong_ton AS qty, don_vi AS unit FROM nguyen_lieu ORDER BY ten_nguyen_lieu"
     );
     res.json({ ingredients });
   } catch (error) {
@@ -556,7 +876,7 @@ app.post("/api/mon-an-nguyen-lieu", async (req, res) => {
       ON CONFLICT(ma_mon, ma_nguyen_lieu)
       DO UPDATE SET so_luong_su_dung = excluded.so_luong_su_dung
       `,
-      [Number(menuId), Number(ingredientId), Number(usageQty)]
+      [String(menuId), String(ingredientId), Number(usageQty)]
     );
     res.json({ message: "Da luu dinh muc nguyen lieu cho mon." });
   } catch (error) {
@@ -564,8 +884,34 @@ app.post("/api/mon-an-nguyen-lieu", async (req, res) => {
   }
 });
 
+app.get("/api/mon-an-nguyen-lieu/tat-ca", async (req, res) => {
+  try {
+    const recipeItems = await dbAll(
+      `
+      SELECT
+        ma.ma_mon AS menuId,
+        ma.ten_mon AS menuName,
+        nl.ma_nguyen_lieu AS ingredientId,
+        nl.ma_nguyen_lieu AS ingredientCode,
+        nl.ten_nguyen_lieu AS ingredientName,
+        nl.don_vi AS unit,
+        manl.so_luong_su_dung AS usageQty,
+        nl.so_luong_ton AS stockQty
+      FROM mon_an_nguyen_lieu manl
+      JOIN mon_an ma ON ma.ma_mon = manl.ma_mon
+      JOIN nguyen_lieu nl ON nl.ma_nguyen_lieu = manl.ma_nguyen_lieu
+      ORDER BY ma.ten_mon, nl.ten_nguyen_lieu
+      `
+    );
+
+    res.json({ recipeItems });
+  } catch (error) {
+    res.status(500).json({ message: "Khong tai duoc danh sach dinh muc tong hop." });
+  }
+});
+
 app.get("/api/mon-an/:menuId/nguyen-lieu", async (req, res) => {
-  const menuId = Number(req.params.menuId);
+  const menuId = String(req.params.menuId || "").trim();
   if (!menuId) {
     res.status(400).json({ message: "Mon an khong hop le." });
     return;
@@ -575,14 +921,14 @@ app.get("/api/mon-an/:menuId/nguyen-lieu", async (req, res) => {
     const recipeItems = await dbAll(
       `
       SELECT
-        nl.id,
+        nl.ma_nguyen_lieu AS id,
         nl.ma_nguyen_lieu AS code,
         nl.ten_nguyen_lieu AS name,
         nl.don_vi AS unit,
         manl.so_luong_su_dung AS usageQty,
         nl.so_luong_ton AS stockQty
       FROM mon_an_nguyen_lieu manl
-      JOIN nguyen_lieu nl ON nl.id = manl.ma_nguyen_lieu
+      JOIN nguyen_lieu nl ON nl.ma_nguyen_lieu = manl.ma_nguyen_lieu
       WHERE manl.ma_mon = ?
       ORDER BY nl.ten_nguyen_lieu
       `,
@@ -608,13 +954,18 @@ app.post("/api/xac-thuc/dang-ky", async (req, res) => {
   }
 
   try {
-    const exists = await dbGet("SELECT id FROM nhan_vien WHERE ten_dang_nhap = ?", [username]);
+    const exists = await dbGet("SELECT ma_nhan_vien FROM nhan_vien WHERE ten_dang_nhap = ?", [username]);
     if (exists) {
       res.status(409).json({ message: "Ten dang nhap da ton tai." });
       return;
     }
 
-    await dbRun("INSERT INTO nhan_vien (ten_dang_nhap, mat_khau, vai_tro) VALUES (?, ?, ?)", [username, password, role]);
+    const maNhanVien = await getNextCode("nhan_vien", "ma_nhan_vien", "NV", 3);
+    await dbRun(
+      "INSERT INTO nhan_vien (ma_nhan_vien, ten_dang_nhap, mat_khau, vai_tro) VALUES (?, ?, ?, ?)",
+      [maNhanVien, username, password, role]
+    );
+
     res.json({ message: "Dang ky thanh cong." });
   } catch (error) {
     res.status(500).json({ message: "Khong the dang ky luc nay." });
@@ -629,7 +980,7 @@ app.post("/api/xac-thuc/quen-mat-khau", async (req, res) => {
   }
 
   try {
-    const user = await dbGet("SELECT id FROM nhan_vien WHERE ten_dang_nhap = ?", [username]);
+    const user = await dbGet("SELECT ma_nhan_vien FROM nhan_vien WHERE ten_dang_nhap = ?", [username]);
     if (!user) {
       res.status(404).json({ message: "Khong tim thay tai khoan." });
       return;
@@ -646,7 +997,6 @@ app.post("/api/xac-thuc/quen-mat-khau", async (req, res) => {
 });
 
 app.post("/api/xac-thuc/dang-nhap", async (req, res) => {
-  // Đăng nhập và ghi nhận thời gian đăng nhập của nhân viên.
   const { username, password } = req.body;
   if (!username || !password) {
     res.status(400).json({ message: "Vui long nhap day du thong tin." });
@@ -655,7 +1005,17 @@ app.post("/api/xac-thuc/dang-nhap", async (req, res) => {
 
   try {
     const user = await dbGet(
-      "SELECT id, ten_dang_nhap AS username, mat_khau AS password, vai_tro AS role, so_lan_sai AS failedAttempts, khoa_den AS lockUntil FROM nhan_vien WHERE ten_dang_nhap = ?",
+      `
+      SELECT
+        ma_nhan_vien AS id,
+        ten_dang_nhap AS username,
+        mat_khau AS password,
+        vai_tro AS role,
+        so_lan_sai AS failedAttempts,
+        khoa_den AS lockUntil
+      FROM nhan_vien
+      WHERE ten_dang_nhap = ?
+      `,
       [username]
     );
 
@@ -665,30 +1025,32 @@ app.post("/api/xac-thuc/dang-nhap", async (req, res) => {
     }
 
     const now = Date.now();
-    if (user.lockUntil && user.lockUntil > now) {
-      const remainingSeconds = Math.ceil((user.lockUntil - now) / 1000);
+    const lockUntil = user.lockUntil ? Number(user.lockUntil) : null;
+    if (lockUntil && lockUntil > now) {
+      const remainingSeconds = Math.ceil((lockUntil - now) / 1000);
       res.status(423).json({ message: "Tai khoan dang bi khoa tam thoi.", remainingSeconds });
       return;
     }
 
     if (user.password !== password) {
-      const nextFail = user.failedAttempts + 1;
+      const nextFail = Number(user.failedAttempts || 0) + 1;
       if (nextFail >= 5) {
-        const lockUntil = now + 5 * 60 * 1000;
-        await dbRun("UPDATE nhan_vien SET so_lan_sai = ?, khoa_den = ? WHERE id = ?", [nextFail, lockUntil, user.id]);
+        const nextLock = now + 5 * 60 * 1000;
+        await dbRun("UPDATE nhan_vien SET so_lan_sai = ?, khoa_den = ? WHERE ma_nhan_vien = ?", [nextFail, nextLock, user.id]);
         res.status(423).json({ message: "Sai 5 lan, tai khoan bi khoa 5 phut.", remainingSeconds: 300 });
         return;
       }
 
-      await dbRun("UPDATE nhan_vien SET so_lan_sai = ?, khoa_den = NULL WHERE id = ?", [nextFail, user.id]);
+      await dbRun("UPDATE nhan_vien SET so_lan_sai = ?, khoa_den = NULL WHERE ma_nhan_vien = ?", [nextFail, user.id]);
       res.status(401).json({ message: `Sai mat khau (${nextFail}/5).` });
       return;
     }
 
     await dbRun(
-      "UPDATE nhan_vien SET so_lan_sai = 0, khoa_den = NULL, thoi_gian_dang_nhap = datetime('now', 'localtime'), thoi_gian_dang_xuat = NULL WHERE id = ?",
+      "UPDATE nhan_vien SET so_lan_sai = 0, khoa_den = NULL, thoi_gian_dang_nhap = datetime('now', 'localtime'), thoi_gian_dang_xuat = NULL WHERE ma_nhan_vien = ?",
       [user.id]
     );
+
     res.json({ user: { id: user.id, username: user.username, role: user.role } });
   } catch (error) {
     res.status(500).json({ message: "Khong the dang nhap luc nay." });
@@ -703,7 +1065,7 @@ app.post("/api/xac-thuc/dang-xuat", async (req, res) => {
   }
 
   try {
-    await dbRun("UPDATE nhan_vien SET thoi_gian_dang_xuat = datetime('now', 'localtime') WHERE id = ?", [Number(userId)]);
+    await dbRun("UPDATE nhan_vien SET thoi_gian_dang_xuat = datetime('now', 'localtime') WHERE ma_nhan_vien = ?", [String(userId)]);
     res.json({ message: "Dang xuat thanh cong." });
   } catch (error) {
     res.status(500).json({ message: "Khong the cap nhat thoi gian dang xuat." });
@@ -711,9 +1073,14 @@ app.post("/api/xac-thuc/dang-xuat", async (req, res) => {
 });
 
 app.post("/api/ban-an/:id/chuyen-trang-thai", async (req, res) => {
-  const tableId = Number(req.params.id);
+  const tableCode = String(req.params.id || "").trim();
+  if (!tableCode) {
+    res.status(400).json({ message: "Ma ban khong hop le." });
+    return;
+  }
+
   try {
-    const table = await dbGet("SELECT id, trang_thai AS status FROM ban_an WHERE id = ?", [tableId]);
+    const table = await dbGet("SELECT ma_ban, trang_thai AS status FROM ban_an WHERE ma_ban = ?", [tableCode]);
     if (!table) {
       res.status(404).json({ message: "Khong tim thay ban." });
       return;
@@ -724,7 +1091,7 @@ app.post("/api/ban-an/:id/chuyen-trang-thai", async (req, res) => {
     else if (table.status === "phucvu") nextStatus = "chebien";
     else if (table.status === "chebien") nextStatus = "hoantat";
 
-    await dbRun("UPDATE ban_an SET trang_thai = ? WHERE id = ?", [nextStatus, tableId]);
+    await dbRun("UPDATE ban_an SET trang_thai = ? WHERE ma_ban = ?", [nextStatus, tableCode]);
     res.json({ message: "Cap nhat trang thai ban thanh cong." });
   } catch (error) {
     res.status(500).json({ message: "Khong the cap nhat trang thai ban." });
@@ -732,7 +1099,6 @@ app.post("/api/ban-an/:id/chuyen-trang-thai", async (req, res) => {
 });
 
 app.post("/api/don-hang", async (req, res) => {
-  // Tạo đơn món cho từng bàn và ghi nhận nhân viên thao tác.
   const { tableId, menuId, qty, userId } = req.body;
   if (!tableId || !menuId || !qty || Number(qty) <= 0 || !userId) {
     res.status(400).json({ message: "Du lieu order khong hop le." });
@@ -740,18 +1106,39 @@ app.post("/api/don-hang", async (req, res) => {
   }
 
   try {
-    const menu = await dbGet("SELECT id, ten_mon AS name, gia AS price FROM mon_an WHERE id = ?", [menuId]);
+    const table = await dbGet("SELECT ma_ban FROM ban_an WHERE ma_ban = ?", [String(tableId)]);
+    if (!table) {
+      res.status(404).json({ message: "Khong tim thay ban." });
+      return;
+    }
+
+    const menu = await dbGet("SELECT ma_mon, ten_mon AS name, gia AS price FROM mon_an WHERE ma_mon = ?", [String(menuId)]);
     if (!menu) {
       res.status(404).json({ message: "Khong tim thay mon an." });
       return;
     }
 
+    const maDonHang = await getNextCode("don_hang", "ma_don_hang", "DH", 5);
+
     await dbRun(
-      "INSERT INTO don_hang (ma_ban, ma_mon, ma_nhan_vien, ten_mon, so_luong, don_gia, trang_thai, thoi_gian_tao) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'))",
-      [tableId, menuId, Number(userId), menu.name, qty, menu.price, "moi"]
+      `
+      INSERT INTO don_hang (
+        ma_don_hang,
+        ma_ban,
+        ma_mon,
+        ma_nhan_vien,
+        ten_mon,
+        so_luong,
+        don_gia,
+        trang_thai,
+        thoi_gian_tao
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'))
+      `,
+      [maDonHang, String(tableId), String(menuId), String(userId), menu.name, Number(qty), menu.price, "moi"]
     );
 
-    await dbRun("UPDATE ban_an SET trang_thai = 'phucvu' WHERE id = ?", [tableId]);
+    await dbRun("UPDATE ban_an SET trang_thai = 'phucvu' WHERE ma_ban = ?", [String(tableId)]);
 
     res.json({ message: "Da them mon vao order." });
   } catch (error) {
@@ -767,14 +1154,18 @@ app.post("/api/don-hang/gui-bep", async (req, res) => {
   }
 
   try {
-    const updated = await dbRun("UPDATE don_hang SET trang_thai = 'dang-che-bien' WHERE ma_ban = ? AND trang_thai = 'moi'", [tableId]);
+    const updated = await dbRun(
+      "UPDATE don_hang SET trang_thai = 'dang-che-bien' WHERE ma_ban = ? AND trang_thai = 'moi'",
+      [String(tableId)]
+    );
+
     if (!updated.changes) {
       res.status(400).json({ message: "Bàn này chưa có món mới để gửi bếp." });
       return;
     }
 
-    const trangThaiBan = await tinhTrangThaiBanTheoDon(tableId);
-    await dbRun("UPDATE ban_an SET trang_thai = ? WHERE id = ?", [trangThaiBan, tableId]);
+    const trangThaiBan = await tinhTrangThaiBanTheoDon(String(tableId));
+    await dbRun("UPDATE ban_an SET trang_thai = ? WHERE ma_ban = ?", [trangThaiBan, String(tableId)]);
     res.json({ message: `Đã gửi ${updated.changes} món xuống bếp.` });
   } catch (error) {
     res.status(500).json({ message: "Khong the gui order xuong bep." });
@@ -782,9 +1173,17 @@ app.post("/api/don-hang/gui-bep", async (req, res) => {
 });
 
 app.post("/api/bep/:orderId/hoan-tat", async (req, res) => {
-  const orderId = Number(req.params.orderId);
+  const orderId = String(req.params.orderId || "").trim();
+  if (!orderId) {
+    res.status(400).json({ message: "Ma don hang khong hop le." });
+    return;
+  }
+
   try {
-    const order = await dbGet("SELECT id, ma_ban AS tableId, ma_mon AS menuId, so_luong AS qty FROM don_hang WHERE id = ?", [orderId]);
+    const order = await dbGet(
+      "SELECT ma_don_hang, ma_ban AS tableId, ma_mon AS menuId, so_luong AS qty FROM don_hang WHERE ma_don_hang = ?",
+      [orderId]
+    );
     if (!order) {
       res.status(404).json({ message: "Khong tim thay order." });
       return;
@@ -798,15 +1197,15 @@ app.post("/api/bep/:orderId/hoan-tat", async (req, res) => {
     for (const recipe of recipes) {
       const consumeQty = Number(recipe.usageQty) * Number(order.qty);
       await dbRun(
-        "UPDATE nguyen_lieu SET so_luong_ton = CASE WHEN so_luong_ton - ? < 0 THEN 0 ELSE so_luong_ton - ? END WHERE id = ?",
+        "UPDATE nguyen_lieu SET so_luong_ton = CASE WHEN so_luong_ton - ? < 0 THEN 0 ELSE so_luong_ton - ? END WHERE ma_nguyen_lieu = ?",
         [consumeQty, consumeQty, recipe.ingredientId]
       );
     }
 
-    await dbRun("UPDATE don_hang SET trang_thai = 'hoan-tat' WHERE id = ?", [orderId]);
+    await dbRun("UPDATE don_hang SET trang_thai = 'hoan-tat' WHERE ma_don_hang = ?", [orderId]);
 
     const trangThaiBan = await tinhTrangThaiBanTheoDon(order.tableId);
-    await dbRun("UPDATE ban_an SET trang_thai = ? WHERE id = ?", [trangThaiBan, order.tableId]);
+    await dbRun("UPDATE ban_an SET trang_thai = ? WHERE ma_ban = ?", [trangThaiBan, order.tableId]);
 
     res.json({ message: "Bep da xac nhan mon hoan tat." });
   } catch (error) {
@@ -815,7 +1214,6 @@ app.post("/api/bep/:orderId/hoan-tat", async (req, res) => {
 });
 
 app.post("/api/hoa-don/thanh-toan", async (req, res) => {
-  // Thanh toán hóa đơn, ghi doanh thu và reset trạng thái bàn.
   const { tableId, promoCode, userId } = req.body;
   if (!tableId || !userId) {
     res.status(400).json({ message: "Thieu thong tin ban thanh toan." });
@@ -824,8 +1222,19 @@ app.post("/api/hoa-don/thanh-toan", async (req, res) => {
 
   try {
     const orders = await dbAll(
-      "SELECT id, ma_ban AS tableId, ten_mon AS menuName, so_luong AS qty, don_gia AS price, trang_thai AS status FROM don_hang WHERE ma_ban = ? ORDER BY id",
-      [tableId]
+      `
+      SELECT
+        ma_don_hang AS id,
+        ma_ban AS tableId,
+        ten_mon AS menuName,
+        so_luong AS qty,
+        don_gia AS price,
+        trang_thai AS status
+      FROM don_hang
+      WHERE ma_ban = ?
+      ORDER BY ma_don_hang
+      `,
+      [String(tableId)]
     );
 
     if (!orders.length) {
@@ -833,19 +1242,34 @@ app.post("/api/hoa-don/thanh-toan", async (req, res) => {
       return;
     }
 
-    const subtotal = orders.reduce((sum, item) => sum + item.qty * item.price, 0);
+    const subtotal = orders.reduce((sum, item) => sum + Number(item.qty) * Number(item.price), 0);
     const code = String(promoCode || "").toUpperCase().trim();
     const discountRate = code === "GIAM20" ? 0.2 : code === "GIAM10" ? 0.1 : 0;
     const discount = Math.round(subtotal * discountRate);
     const total = subtotal - discount;
 
+    const maHoaDon = await getNextCode("hoa_don", "ma_hoa_don", "HD", 5);
+
     await dbRun(
-      "INSERT INTO hoa_don (ma_ban, ma_nhan_vien, tam_tinh, giam_gia, thanh_tien, thoi_gian_tao) VALUES (?, ?, ?, ?, ?, datetime('now', 'localtime'))",
-      [tableId, Number(userId), subtotal, discount, total]
+      `
+      INSERT INTO hoa_don (
+        ma_hoa_don,
+        ma_ban,
+        ma_nhan_vien,
+        tam_tinh,
+        giam_gia,
+        thanh_tien,
+        thoi_gian_tao
+      )
+      VALUES (?, ?, ?, ?, ?, ?, datetime('now', 'localtime'))
+      `,
+      [maHoaDon, String(tableId), String(userId), subtotal, discount, total]
     );
-    await dbRun("DELETE FROM don_hang WHERE ma_ban = ?", [tableId]);
-    const trangThaiBan = await tinhTrangThaiBanTheoDon(tableId);
-    await dbRun("UPDATE ban_an SET trang_thai = ? WHERE id = ?", [trangThaiBan, tableId]);
+
+    await dbRun("DELETE FROM don_hang WHERE ma_ban = ?", [String(tableId)]);
+
+    const trangThaiBan = await tinhTrangThaiBanTheoDon(String(tableId));
+    await dbRun("UPDATE ban_an SET trang_thai = ? WHERE ma_ban = ?", [trangThaiBan, String(tableId)]);
 
     res.json({
       invoice: {
@@ -866,8 +1290,15 @@ app.get("*", (req, res) => {
 
 initDb()
   .then(() => {
-    app.listen(PORT, () => {
+    app.listen(PORT, HOST, () => {
       console.log(`Server dang chay tai http://localhost:${PORT}`);
+      const lanUrls = getLanUrls(PORT);
+      if (lanUrls.length) {
+        console.log("Truy cap tren dien thoai cung mang Wi-Fi bang:");
+        lanUrls.forEach((url) => {
+          console.log(`- ${url}`);
+        });
+      }
     });
   })
   .catch((error) => {
