@@ -99,7 +99,7 @@
           <!-- Chức năng đặt món: tạo đơn theo bàn và gửi bếp -->
           <h3>Nhân viên phục vụ - Đặt món</h3>
           <form id="orderForm" class="stack">
-            <label>Ban</label>
+            <label>Bàn</label>
             <select id="orderTable"></select>
 
             <label>Món ăn</label>
@@ -120,6 +120,13 @@
           <h3>Bộ phận bếp</h3>
           <p>Xác nhận hoàn tất món.</p>
           <div id="kitchenQueue" class="list-box"></div>
+        </article>
+
+        <article class="card" id="orderPreviewCard">
+          <!-- Chức năng xem trước đơn hàng: đọc toàn bộ đơn hiện có trong CSDL -->
+          <h3>Xem trước đơn hàng</h3>
+          <p>Nhân viên theo dõi toàn bộ đơn theo từng bàn, số lượng và trạng thái xử lý.</p>
+          <div id="orderPreviewList" class="list-box order-preview-list"></div>
         </article>
 
         <article class="card" id="billingCard">
@@ -169,7 +176,7 @@
             </form>
 
             <form id="recipeForm" class="stack">
-              <h4>2) Gán định mức cho món</h4>
+              <h4>2) Thêm số lượng nguyên liệu cho món</h4>
               <label>Món ăn</label>
               <select id="recipeDish"></select>
 
@@ -189,10 +196,11 @@
               <h4>Tồn kho nguyên liệu</h4>
               <div id="ingredientList" class="list-box"></div>
             </div>
-            <div>
-              <h4>Định mức theo món</h4>
-              <div id="recipeList" class="list-box"></div>
-            </div>
+          </div>
+
+          <div>
+            <h4>Tất cả định mức nguyên liệu theo từng món</h4>
+            <div id="recipeAllList" class="list-box"></div>
           </div>
         </article>
       </div>
