@@ -314,6 +314,7 @@ button {
 #tableCard { grid-column: span 4; }
 #orderCard { grid-column: span 4; }
 #kitchenCard { grid-column: span 4; }
+#orderPreviewCard { grid-column: span 12; }
 #billingCard { grid-column: span 6; }
 #reportCard { grid-column: span 6; }
 #ingredientCard { grid-column: span 12; }
@@ -350,6 +351,69 @@ button {
   justify-content: space-between;
   align-items: center;
   gap: 8px;
+}
+
+.order-preview-list {
+  max-height: 340px;
+}
+
+.order-preview-group {
+  display: block;
+}
+
+.order-preview-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+  border-bottom: 1px solid #e8d8c5;
+  padding-bottom: 6px;
+  margin-bottom: 6px;
+}
+
+.order-preview-meta {
+  color: var(--muted);
+  font-size: 0.92rem;
+  text-align: right;
+}
+
+.order-preview-body {
+  display: grid;
+  gap: 6px;
+}
+
+.order-preview-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: flex-start;
+  border: 1px solid #ead7c2;
+  border-radius: 10px;
+  padding: 8px;
+  background: #fffcf7;
+}
+
+.order-status {
+  font-size: 0.8rem;
+  font-weight: 700;
+  border-radius: 999px;
+  padding: 4px 8px;
+  white-space: nowrap;
+}
+
+.order-status-moi {
+  background: #ffe8c2;
+  color: #8c5500;
+}
+
+.order-status-dang-che-bien {
+  background: #d8eaf6;
+  color: #245c7d;
+}
+
+.order-status-hoan-tat {
+  background: #d7f1df;
+  color: #246343;
 }
 
 .table-state {
