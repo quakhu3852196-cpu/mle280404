@@ -15,6 +15,7 @@ const PORT = process.env.PORT || 3000;
 const HOST = process.env.HOST || "0.0.0.0";
 const DB_PATH = path.join(__dirname, "restaurant.db");
 
+// Danh mục món mặc định để seed dữ liệu ban đầu (chỉ áp dụng khi DB chưa có dữ liệu).
 const DEFAULT_MENU_ITEMS = [
   { code: "m1", name: "Phở bò", price: 65000 },
   { code: "m2", name: "Cơm gà", price: 55000 },
@@ -54,6 +55,7 @@ const DEFAULT_INGREDIENTS = [
   { code: "nl19", name: "Đào ngâm", qty: 80, unit: "hũ" }
 ];
 
+// Định mức chuẩn: mỗi món tương ứng danh sách nguyên liệu + lượng dùng cho 1 phần.
 const DEFAULT_RECIPE_MAP = {
   m1: [
     { ingredientCode: "nl1", usageQty: 140 },
@@ -129,6 +131,10 @@ const DEFAULT_RECIPE_MAP = {
 
 const db = new sqlite3.Database(DB_PATH);
 
+// =========================
+// Utility: DB + mã nghiệp vụ
+// =========================
+// Bộ helper Promise để dùng async/await thay cho callback sqlite3.
 function dbRun(sql, params = []) {
   return new Promise((resolve, reject) => {
     db.run(sql, params, function onRun(err) {
@@ -194,6 +200,8 @@ function getLanUrls(port) {
 }
 
 async function getNextCode(tableName, columnName, prefix, padding) {
+  // Sinh mã tăng dần theo prefix, ví dụ NV001 / DH00001 / HD00001.
+  // Cách này giúp mã dễ đọc với người dùng thay vì id số tự tăng.
   const row = await dbGet(
     `SELECT ${columnName} AS code FROM ${tableName} WHERE ${columnName} LIKE ? ORDER BY ${columnName} DESC LIMIT 1`,
     [`${prefix}%`]
@@ -209,16 +217,95 @@ async function getNextCode(tableName, columnName, prefix, padding) {
   return `${prefix}${String(next).padStart(padding, "0")}`;
 }
 
+async function resolveEmployeeCode(inputValue) {
+  // Chuẩn hóa mã nhân viên đầu vào (hỗ trợ cả dữ liệu cũ dạng số: 1 -> NV001).
+  // Ưu tiên nhận đúng mã NVxxx; chỉ fallback map số khi cần tương thích dữ liệu cũ.
+  const raw = String(inputValue || "").trim();
+  if (!raw) {
+    return null;
+  }
+
+  const exact = await dbGet("SELECT ma_nhan_vien FROM nhan_vien WHERE ma_nhan_vien = ?", [raw]);
+  if (exact) {
+    return exact.ma_nhan_vien;
+  }
+
+  if (!/^\d+$/.test(raw)) {
+    return null;
+  }
+
+  const numeric = Number.parseInt(raw, 10);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return null;
+  }
+
+  const candidates = [`NV${String(numeric).padStart(3, "0")}`, `NV${String(numeric).padStart(4, "0")}`];
+  for (const candidate of candidates) {
+    const row = await dbGet("SELECT ma_nhan_vien FROM nhan_vien WHERE ma_nhan_vien = ?", [candidate]);
+    if (row) {
+      return row.ma_nhan_vien;
+    }
+  }
+
+  return null;
+}
+
+async function normalizeLegacyEmployeeReferences() {
+  // Dọn dữ liệu lịch sử: đổi mọi tham chiếu nhân viên không theo chuẩn NVxxx.
+  // Hàm này chạy sau seed để hệ thống vừa mở đã sạch dữ liệu tham chiếu nhân viên.
+  const donHangs = await dbAll(
+    `
+    SELECT ma_don_hang, ma_nhan_vien
+    FROM don_hang
+    WHERE ma_nhan_vien IS NOT NULL
+      AND TRIM(ma_nhan_vien) <> ''
+      AND ma_nhan_vien NOT LIKE 'NV%'
+    `
+  );
+
+  for (const row of donHangs) {
+    const normalized = await resolveEmployeeCode(row.ma_nhan_vien);
+    if (normalized) {
+      await dbRun("UPDATE don_hang SET ma_nhan_vien = ? WHERE ma_don_hang = ?", [normalized, row.ma_don_hang]);
+    }
+  }
+
+  const hoaDons = await dbAll(
+    `
+    SELECT ma_hoa_don, ma_nhan_vien
+    FROM hoa_don
+    WHERE ma_nhan_vien IS NOT NULL
+      AND TRIM(ma_nhan_vien) <> ''
+      AND ma_nhan_vien NOT LIKE 'NV%'
+    `
+  );
+
+  for (const row of hoaDons) {
+    const normalized = await resolveEmployeeCode(row.ma_nhan_vien);
+    if (normalized) {
+      await dbRun("UPDATE hoa_don SET ma_nhan_vien = ? WHERE ma_hoa_don = ?", [normalized, row.ma_hoa_don]);
+    }
+  }
+}
+
 async function migrateIdPrimaryKeysToCodeIfNeeded() {
+  // Migration một lần: chuyển schema cũ dùng id sang schema mới dùng mã nghiệp vụ làm khóa chính.
+  // Chiến lược migrate:
+  // 1) Tạo bảng _new theo schema mã.
+  // 2) Chuyển dữ liệu + map id -> mã nghiệp vụ.
+  // 3) Drop bảng cũ, rename bảng mới.
+  // 4) Commit trong transaction để tránh trạng thái nửa chừng.
   const needsMigration = await columnExists("ban_an", "id");
   if (!needsMigration) {
     return;
   }
 
+  // Tắt FK tạm thời để đổi tên/drop bảng an toàn trong quá trình migrate.
   await dbRun("PRAGMA foreign_keys = OFF");
   await dbRun("BEGIN TRANSACTION");
 
   try {
+    // 1) Migrate bảng nhân viên: id -> ma_nhan_vien (NVxxx)
     await dbRun(`
       CREATE TABLE nhan_vien_new (
         ma_nhan_vien TEXT PRIMARY KEY,
@@ -263,6 +350,7 @@ async function migrateIdPrimaryKeysToCodeIfNeeded() {
       FROM nhan_vien
     `);
 
+    // 2) Migrate bảng bàn ăn: id -> ma_ban (BAxx)
     await dbRun(`
       CREATE TABLE ban_an_new (
         ma_ban TEXT PRIMARY KEY,
@@ -284,6 +372,7 @@ async function migrateIdPrimaryKeysToCodeIfNeeded() {
       ORDER BY id
     `);
 
+    // 3) Migrate bảng món ăn: ưu tiên giữ ma_mon cũ nếu đã có.
     await dbRun(`
       CREATE TABLE mon_an_new (
         ma_mon TEXT PRIMARY KEY,
@@ -305,6 +394,7 @@ async function migrateIdPrimaryKeysToCodeIfNeeded() {
       ORDER BY id
     `);
 
+    // 4) Migrate bảng nguyên liệu: ưu tiên giữ ma_nguyen_lieu cũ nếu đã có.
     await dbRun(`
       CREATE TABLE nguyen_lieu_new (
         ma_nguyen_lieu TEXT PRIMARY KEY,
@@ -328,6 +418,7 @@ async function migrateIdPrimaryKeysToCodeIfNeeded() {
       ORDER BY id
     `);
 
+    // 5) Migrate bảng đơn hàng: map mã bàn/món/nhân viên và chuẩn hóa thời gian tạo.
     await dbRun(`
       CREATE TABLE don_hang_new (
         ma_don_hang TEXT PRIMARY KEY,
@@ -379,6 +470,7 @@ async function migrateIdPrimaryKeysToCodeIfNeeded() {
       ORDER BY d.id
     `);
 
+    // 6) Migrate bảng hóa đơn: giữ đủ giá trị tiền và map mã nhân viên.
     await dbRun(`
       CREATE TABLE hoa_don_new (
         ma_hoa_don TEXT PRIMARY KEY,
@@ -422,6 +514,7 @@ async function migrateIdPrimaryKeysToCodeIfNeeded() {
       ORDER BY h.id
     `);
 
+    // 7) Migrate bảng trung gian món-nguyên liệu theo khóa ghép mã.
     await dbRun(`
       CREATE TABLE mon_an_nguyen_lieu_new (
         ma_mon TEXT NOT NULL,
@@ -444,6 +537,7 @@ async function migrateIdPrimaryKeysToCodeIfNeeded() {
       LEFT JOIN nguyen_lieu nl ON nl.id = manl.ma_nguyen_lieu
     `);
 
+    // 8) Migrate bảng thống kê tổng hợp.
     await dbRun(`
       CREATE TABLE thong_ke_he_thong_new (
         ma_thong_ke TEXT PRIMARY KEY,
@@ -506,6 +600,7 @@ async function migrateIdPrimaryKeysToCodeIfNeeded() {
       );
     }
 
+    // 9) Dọn bảng cũ và đổi tên bảng mới về tên chuẩn đang dùng trong code.
     const dropTables = [
       "mon_an_nguyen_lieu",
       "don_hang",
@@ -542,6 +637,8 @@ async function migrateIdPrimaryKeysToCodeIfNeeded() {
 }
 
 async function ensureCodeSchema() {
+  // Đảm bảo toàn bộ bảng theo schema mã hiện tại đã tồn tại trước khi chạy API.
+  // Hàm này giúp dự án chạy được cả trên DB trắng (chưa có bảng nào).
   await dbRun(`
     CREATE TABLE IF NOT EXISTS nhan_vien (
       ma_nhan_vien TEXT PRIMARY KEY,
@@ -637,6 +734,7 @@ async function ensureCodeSchema() {
 }
 
 async function seedDefaultRecipes() {
+  // Seed định mức chỉ theo mã món/mã nguyên liệu, không phụ thuộc id.
   for (const [dishCode, recipeItems] of Object.entries(DEFAULT_RECIPE_MAP)) {
     const mon = await dbGet("SELECT ma_mon FROM mon_an WHERE ma_mon = ?", [dishCode]);
     if (!mon) {
@@ -663,6 +761,8 @@ async function seedDefaultRecipes() {
 }
 
 async function seedDefaults() {
+  // Seed dữ liệu hệ thống: tài khoản mẫu, bàn, menu, kho, định mức và số liệu tổng hợp.
+  // Luôn dùng COUNT(*) trước khi seed để tránh nhân bản dữ liệu khi restart server.
   const userCount = await dbGet("SELECT COUNT(*) AS count FROM nhan_vien");
   if (Number(userCount.count) === 0) {
     await dbRun(
@@ -686,6 +786,7 @@ async function seedDefaults() {
 
   await dbRun("UPDATE ban_an SET ten_ban = REPLACE(ten_ban, 'Ban ', 'Bàn ') WHERE ten_ban LIKE 'Ban %'");
 
+  // Menu/kho dùng UPSERT để vừa có thể seed mới vừa cập nhật tên/đơn vị khi thay đổi.
   for (const item of DEFAULT_MENU_ITEMS) {
     await dbRun(
       `
@@ -712,10 +813,13 @@ async function seedDefaults() {
 
   await seedDefaultRecipes();
 
+  // Đồng bộ tên món trong don_hang theo danh mục mon_an để tránh tên cũ lệch chuẩn.
   await dbRun(`
     UPDATE don_hang
     SET ten_mon = COALESCE((SELECT ten_mon FROM mon_an WHERE mon_an.ma_mon = don_hang.ma_mon), ten_mon)
   `);
+
+  await normalizeLegacyEmployeeReferences();
 
   const thongKeCount = await dbGet("SELECT COUNT(*) AS count FROM thong_ke_he_thong WHERE ma_thong_ke = 'TK001'");
   if (!thongKeCount || Number(thongKeCount.count) === 0) {
@@ -751,12 +855,16 @@ async function seedDefaults() {
 }
 
 async function initDb() {
+  // Chuỗi khởi tạo DB theo thứ tự: migrate -> tạo schema chuẩn -> seed dữ liệu.
+  // Bất kỳ lỗi nào ở đây sẽ chặn app.listen để tránh chạy server trên DB lỗi.
   await migrateIdPrimaryKeysToCodeIfNeeded();
   await ensureCodeSchema();
   await seedDefaults();
 }
 
 async function tinhTrangThaiBanTheoDon(maBan) {
+  // Quy tắc tổng hợp trạng thái bàn dựa trên trạng thái các dòng đơn của chính bàn đó.
+  // Ưu tiên: nếu mọi món hoàn tất => hoantat; nếu có món đang chế biến => chebien; còn lại phucvu.
   const stats = await dbGet(
     `
     SELECT
@@ -786,6 +894,7 @@ async function tinhTrangThaiBanTheoDon(maBan) {
 }
 
 async function dongBoTrangThaiTatCaBan() {
+  // Đồng bộ trạng thái cho mọi bàn trước khi trả dữ liệu tổng quan.
   const bans = await dbAll("SELECT ma_ban FROM ban_an ORDER BY ma_ban");
   for (const ban of bans) {
     const trangThai = await tinhTrangThaiBanTheoDon(ban.ma_ban);
@@ -797,6 +906,8 @@ app.use(express.json());
 app.use(express.static(__dirname));
 
 app.get("/api/trang-thai", async (req, res) => {
+  // API snapshot cho frontend: trả đủ bàn, món, đơn, kho, doanh thu trong một lần gọi.
+  // Frontend gọi endpoint này nhiều lần nên cần payload gọn và ổn định key.
   try {
     await dongBoTrangThaiTatCaBan();
 
@@ -844,6 +955,7 @@ app.get("/api/nguyen-lieu", async (req, res) => {
 });
 
 app.post("/api/nguyen-lieu", async (req, res) => {
+  // Thêm nguyên liệu mới vào kho theo mã duy nhất do người dùng nhập.
   const { code, name, qty, unit } = req.body;
   if (!code || !name || qty === undefined || !unit) {
     res.status(400).json({ message: "Thong tin nguyen lieu khong hop le." });
@@ -862,6 +974,7 @@ app.post("/api/nguyen-lieu", async (req, res) => {
 });
 
 app.post("/api/mon-an-nguyen-lieu", async (req, res) => {
+  // Lưu định mức món-nguyên liệu theo UPSERT để chỉnh lại số lượng không tạo bản ghi trùng.
   const { menuId, ingredientId, usageQty } = req.body;
   if (!menuId || !ingredientId || !usageQty || Number(usageQty) <= 0) {
     res.status(400).json({ message: "Thong tin dinh muc khong hop le." });
@@ -997,6 +1110,7 @@ app.post("/api/xac-thuc/quen-mat-khau", async (req, res) => {
 });
 
 app.post("/api/xac-thuc/dang-nhap", async (req, res) => {
+  // Luồng đăng nhập có chống brute-force: sai 5 lần khóa tạm 5 phút.
   const { username, password } = req.body;
   if (!username || !password) {
     res.status(400).json({ message: "Vui long nhap day du thong tin." });
@@ -1065,7 +1179,13 @@ app.post("/api/xac-thuc/dang-xuat", async (req, res) => {
   }
 
   try {
-    await dbRun("UPDATE nhan_vien SET thoi_gian_dang_xuat = datetime('now', 'localtime') WHERE ma_nhan_vien = ?", [String(userId)]);
+    const maNhanVien = await resolveEmployeeCode(userId);
+    if (!maNhanVien) {
+      res.status(400).json({ message: "Ma nhan vien dang xuat khong hop le." });
+      return;
+    }
+
+    await dbRun("UPDATE nhan_vien SET thoi_gian_dang_xuat = datetime('now', 'localtime') WHERE ma_nhan_vien = ?", [maNhanVien]);
     res.json({ message: "Dang xuat thanh cong." });
   } catch (error) {
     res.status(500).json({ message: "Khong the cap nhat thoi gian dang xuat." });
@@ -1099,6 +1219,8 @@ app.post("/api/ban-an/:id/chuyen-trang-thai", async (req, res) => {
 });
 
 app.post("/api/don-hang", async (req, res) => {
+  // Tạo dòng order mới cho bàn và ghi nhận nhân viên thao tác.
+  // Luồng kiểm tra bắt buộc: mã nhân viên hợp lệ -> bàn tồn tại -> món tồn tại -> mới ghi đơn.
   const { tableId, menuId, qty, userId } = req.body;
   if (!tableId || !menuId || !qty || Number(qty) <= 0 || !userId) {
     res.status(400).json({ message: "Du lieu order khong hop le." });
@@ -1106,6 +1228,12 @@ app.post("/api/don-hang", async (req, res) => {
   }
 
   try {
+    const maNhanVien = await resolveEmployeeCode(userId);
+    if (!maNhanVien) {
+      res.status(400).json({ message: "Ma nhan vien tao order khong hop le." });
+      return;
+    }
+
     const table = await dbGet("SELECT ma_ban FROM ban_an WHERE ma_ban = ?", [String(tableId)]);
     if (!table) {
       res.status(404).json({ message: "Khong tim thay ban." });
@@ -1135,7 +1263,7 @@ app.post("/api/don-hang", async (req, res) => {
       )
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'))
       `,
-      [maDonHang, String(tableId), String(menuId), String(userId), menu.name, Number(qty), menu.price, "moi"]
+      [maDonHang, String(tableId), String(menuId), maNhanVien, menu.name, Number(qty), menu.price, "moi"]
     );
 
     await dbRun("UPDATE ban_an SET trang_thai = 'phucvu' WHERE ma_ban = ?", [String(tableId)]);
@@ -1147,6 +1275,7 @@ app.post("/api/don-hang", async (req, res) => {
 });
 
 app.post("/api/don-hang/gui-bep", async (req, res) => {
+  // Chỉ chuyển các dòng trạng thái "moi" sang "dang-che-bien" cho đúng quy trình bếp.
   const { tableId } = req.body;
   if (!tableId) {
     res.status(400).json({ message: "Thieu thong tin ban." });
@@ -1173,6 +1302,8 @@ app.post("/api/don-hang/gui-bep", async (req, res) => {
 });
 
 app.post("/api/bep/:orderId/hoan-tat", async (req, res) => {
+  // Xác nhận hoàn tất món tại bếp và trừ tồn kho theo định mức đã cấu hình.
+  // Lượng trừ kho = định mức * số lượng order; không cho tồn kho âm.
   const orderId = String(req.params.orderId || "").trim();
   if (!orderId) {
     res.status(400).json({ message: "Ma don hang khong hop le." });
@@ -1214,6 +1345,11 @@ app.post("/api/bep/:orderId/hoan-tat", async (req, res) => {
 });
 
 app.post("/api/hoa-don/thanh-toan", async (req, res) => {
+  // Chốt hóa đơn: tính tiền, áp mã giảm giá, ghi doanh thu và giải phóng bàn.
+  // Quy tắc mã giảm giá hiện tại:
+  // - GIAM10: giảm 10%
+  // - GIAM20: giảm 20%
+  // - mã khác: không giảm
   const { tableId, promoCode, userId } = req.body;
   if (!tableId || !userId) {
     res.status(400).json({ message: "Thieu thong tin ban thanh toan." });
@@ -1221,6 +1357,12 @@ app.post("/api/hoa-don/thanh-toan", async (req, res) => {
   }
 
   try {
+    const maNhanVien = await resolveEmployeeCode(userId);
+    if (!maNhanVien) {
+      res.status(400).json({ message: "Ma nhan vien thanh toan khong hop le." });
+      return;
+    }
+
     const orders = await dbAll(
       `
       SELECT
@@ -1263,7 +1405,7 @@ app.post("/api/hoa-don/thanh-toan", async (req, res) => {
       )
       VALUES (?, ?, ?, ?, ?, ?, datetime('now', 'localtime'))
       `,
-      [maHoaDon, String(tableId), String(userId), subtotal, discount, total]
+      [maHoaDon, String(tableId), maNhanVien, subtotal, discount, total]
     );
 
     await dbRun("DELETE FROM don_hang WHERE ma_ban = ?", [String(tableId)]);
@@ -1271,12 +1413,32 @@ app.post("/api/hoa-don/thanh-toan", async (req, res) => {
     const trangThaiBan = await tinhTrangThaiBanTheoDon(String(tableId));
     await dbRun("UPDATE ban_an SET trang_thai = ? WHERE ma_ban = ?", [trangThaiBan, String(tableId)]);
 
+    const invoice = await dbGet(
+      `
+      SELECT
+        ma_hoa_don AS invoiceCode,
+        ma_ban AS tableId,
+        ma_nhan_vien AS staffCode,
+        tam_tinh AS subtotal,
+        giam_gia AS discount,
+        thanh_tien AS total,
+        thoi_gian_tao AS createdAt
+      FROM hoa_don
+      WHERE ma_hoa_don = ?
+      `,
+      [maHoaDon]
+    );
+
     res.json({
-      invoice: {
-        tableId,
+      // Trả ngược hóa đơn vừa ghi để frontend hiển thị/in theo dữ liệu thực tế từ DB.
+      invoice: invoice || {
+        invoiceCode: maHoaDon,
+        tableId: String(tableId),
+        staffCode: maNhanVien,
         subtotal,
         discount,
-        total
+        total,
+        createdAt: null
       }
     });
   } catch (error) {
@@ -1290,6 +1452,7 @@ app.get("*", (req, res) => {
 
 initDb()
   .then(() => {
+    // Chỉ mở cổng sau khi DB đã sẵn sàng để tránh request vào khi schema chưa khởi tạo xong.
     app.listen(PORT, HOST, () => {
       console.log(`Server dang chay tai http://localhost:${PORT}`);
       const lanUrls = getLanUrls(PORT);
