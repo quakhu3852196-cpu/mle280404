@@ -90,6 +90,7 @@
       <div class="app-grid">
         <article class="card" id="tableCard">
           <!-- Chức năng bàn: theo dõi trạng thái từng bàn và xử lý song song -->
+          <!-- Người dùng có quyền sẽ bấm "Đổi trạng thái" để chuyển theo vòng: trong -> phucvu -> chebien -> hoantat -->
           <h3>Lễ tân - Quản lý bàn</h3>
           <p>Tìm bàn trống và cập nhật trạng thái bàn.</p>
           <div id="tableList" class="table-list"></div>
@@ -97,6 +98,7 @@
 
         <article class="card" id="orderCard">
           <!-- Chức năng đặt món: tạo đơn theo bàn và gửi bếp -->
+          <!-- Form này ghi trực tiếp vào bảng don_hang thông qua API /api/don-hang -->
           <h3>Nhân viên phục vụ - Đặt món</h3>
           <form id="orderForm" class="stack">
             <label>Bàn</label>
@@ -117,6 +119,7 @@
 
         <article class="card" id="kitchenCard">
           <!-- Chức năng bếp: xác nhận món hoàn tất, cập nhật trạng thái đơn -->
+          <!-- Nút "Xác nhận xong" sẽ cập nhật trạng thái order và tự trừ tồn kho theo định mức -->
           <h3>Bộ phận bếp</h3>
           <p>Xác nhận hoàn tất món.</p>
           <div id="kitchenQueue" class="list-box"></div>
@@ -124,6 +127,7 @@
 
         <article class="card" id="orderPreviewCard">
           <!-- Chức năng xem trước đơn hàng: đọc toàn bộ đơn hiện có trong CSDL -->
+          <!-- Dữ liệu được nhóm theo từng bàn để nhân viên nắm nhanh khối lượng xử lý -->
           <h3>Xem trước đơn hàng</h3>
           <p>Nhân viên theo dõi toàn bộ đơn theo từng bàn, số lượng và trạng thái xử lý.</p>
           <div id="orderPreviewList" class="list-box order-preview-list"></div>
@@ -131,6 +135,7 @@
 
         <article class="card" id="billingCard">
           <!-- Chức năng thu ngân: thanh toán, áp khuyến mãi, xuất hóa đơn -->
+          <!-- Sau thanh toán thành công, hệ thống tạo bản ghi hoa_don và in theo mẫu invoice-paper -->
           <h3>Thu ngân - Hóa đơn</h3>
           <form id="billingForm" class="stack">
             <label>Bàn cần thanh toán</label>
@@ -146,6 +151,7 @@
 
         <article class="card" id="reportCard">
           <!-- Chức năng quản lý: xem doanh thu tổng -->
+          <!-- Doanh thu lấy từ tổng thanh_tien trong bảng hoa_don -->
           <h3>Quản lý doanh thu</h3>
           <p id="revenueInfo">Doanh thu hôm nay: 0 VND</p>
           <p class="hint">Sau thanh toán: doanh thu được ghi nhận, trạng thái bàn về trống.</p>
@@ -153,6 +159,7 @@
 
         <article class="card" id="ingredientCard">
           <!-- Chức năng kho: quản lý nguyên liệu và định mức món-nguyên liệu -->
+          <!-- Khu này gồm 2 luồng: thêm nguyên liệu kho và cấu hình định mức nguyên liệu cho từng món -->
           <h3>Kho nguyên liệu</h3>
           <p>Thiết lập định mức cho từng món ăn.</p>
 
