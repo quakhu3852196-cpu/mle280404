@@ -670,14 +670,28 @@ function bindBilling() {
         body: JSON.stringify({ tableId, promoCode: promo, userId: currentUser?.id })
       });
 
-      const { subtotal, discount, total } = result.invoice;
+      const { invoiceCode, subtotal, discount, total, createdAt } = result.invoice;
+      const tableName = appState.tables.find((t) => String(t.id) === String(tableId))?.name || tableId;
+
       invoiceBox.innerHTML = `
-        <div class="list-item">
-          <div>
-            <strong>Hoa don ban ${tableId}</strong><br />
-            Tam tinh: ${money(subtotal)}<br />
-            Giam gia: -${money(discount)}<br />
-            <strong>Thanh tien: ${money(total)}</strong>
+        <div class="invoice-paper">
+          <div class="invoice-title">Hóa đơn thanh toán</div>
+          <div class="invoice-meta">
+            <span><strong>Mã hóa đơn:</strong> ${invoiceCode || "N/A"}</span>
+            <span><strong>Bàn:</strong> ${tableName}</span>
+            <span><strong>Thời gian tạo:</strong> ${createdAt || "N/A"}</span>
+          </div>
+          <div class="invoice-row">
+            <span>Tạm tính</span>
+            <strong>${money(Number(subtotal || 0))}</strong>
+          </div>
+          <div class="invoice-row">
+            <span>Giảm giá</span>
+            <strong>- ${money(Number(discount || 0))}</strong>
+          </div>
+          <div class="invoice-row invoice-total">
+            <span>Thành tiền</span>
+            <strong>${money(Number(total || 0))}</strong>
           </div>
         </div>
       `;
