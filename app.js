@@ -6,6 +6,7 @@
 */
 
 const STORAGE_KEYS = {
+  // Lưu thông tin user hiện tại để giữ phiên khi refresh trang.
   currentUser: "rms_current_user"
 };
 
@@ -15,6 +16,9 @@ const roleMap = {
   cashier: "Thu ngân"
 };
 
+// Ma trận phân quyền: mỗi vai trò bật/tắt khối UI và quyền thao tác tương ứng.
+// cards: bật/tắt card giao diện.
+// can*: quyền thực thi nghiệp vụ (gửi bếp, thanh toán, ...).
 const roleConfigs = {
   manager: {
     description: "Quản lý: có toàn quyền gọi món, bếp, thu ngân, doanh thu và quản lý bàn.",
@@ -71,6 +75,8 @@ const roleConfigs = {
 
 let lockTimer = null;
 let currentUser = null;
+// appState là nguồn dữ liệu duy nhất cho toàn bộ UI sau mỗi lần gọi /api/trang-thai.
+// Tất cả hàm render sẽ đọc dữ liệu từ object này.
 let appState = {
   tables: [],
   menu: [],
@@ -85,6 +91,8 @@ function getRoleConfig(role = currentUser?.role) {
 
 async function api(path, options = {}) {
   // Hàm gọi API chung: chuẩn hóa request, parse JSON và xử lý lỗi.
+  // - Tự thêm header JSON cho mọi request.
+  // - Đọc payload lỗi từ backend để hiển thị thông báo đúng nghiệp vụ.
   const response = await fetch(path, {
     headers: {
       "Content-Type": "application/json"
@@ -110,6 +118,8 @@ async function api(path, options = {}) {
 }
 
 async function refreshState() {
+  // Luôn lấy snapshot mới nhất từ backend để tránh lệch dữ liệu giữa các card.
+  // Ví dụ: card bếp, card bàn, card doanh thu đều phụ thuộc cùng một dữ liệu gốc.
   const state = await api("/api/trang-thai");
   appState = state;
 }
@@ -119,6 +129,7 @@ function money(n) {
 }
 
 function setMessage(el, text, type) {
+  // Chuẩn hóa cách hiển thị message thành công/cảnh báo/lỗi cho toàn bộ form.
   el.textContent = text;
   el.classList.remove("ok", "warn", "error");
   if (type) {
@@ -127,6 +138,7 @@ function setMessage(el, text, type) {
 }
 
 function bindAuthTabs() {
+  // Chuyển tab xác thực bằng cách bật/tắt class active cho nút và panel tương ứng.
   const buttons = document.querySelectorAll(".tab-btn");
   const panels = document.querySelectorAll(".auth-card");
 
@@ -144,6 +156,7 @@ function bindAuthTabs() {
 }
 
 function lockCountdown(remainingSeconds, msgEl, submitBtn) {
+  // Khi tài khoản bị khóa tạm, khóa nút đăng nhập và đếm ngược thời gian mở khóa.
   if (lockTimer) {
     clearInterval(lockTimer);
   }
@@ -169,6 +182,7 @@ function lockCountdown(remainingSeconds, msgEl, submitBtn) {
 
 function bindAuthForms() {
   // Luồng xác thực: đăng nhập, đăng ký, quên mật khẩu.
+  // Mọi form đều gọi API backend rồi phản hồi message ngay trên UI.
   const loginForm = document.getElementById("loginForm");
   const loginMessage = document.getElementById("loginMessage");
   const loginBtn = loginForm.querySelector("button[type='submit']");
@@ -189,6 +203,7 @@ function bindAuthForms() {
         body: JSON.stringify({ username, password })
       });
 
+      // Lưu phiên đăng nhập để khi reload vẫn giữ user hiện tại.
       localStorage.setItem(STORAGE_KEYS.currentUser, JSON.stringify(result.user));
       await showAppLayer(result.user);
       setMessage(loginMessage, "Đăng nhập thành công.", "ok");
@@ -250,6 +265,8 @@ function bindAuthForms() {
 }
 
 function applyRolePermission(role) {
+  // Ẩn/hiện từng card theo vai trò đăng nhập hiện tại.
+  // Đây là lớp chặn UI; lớp chặn quyền thực tế vẫn nằm ở backend API.
   const tableCard = document.getElementById("tableCard");
   const orderCard = document.getElementById("orderCard");
   const kitchenCard = document.getElementById("kitchenCard");
@@ -269,6 +286,7 @@ function applyRolePermission(role) {
 }
 
 function orderStatusLabel(status) {
+  // Map mã trạng thái kỹ thuật sang nhãn tiếng Việt để người dùng dễ đọc.
   if (status === "moi") return "Mới tạo";
   if (status === "dang-che-bien") return "Đang chế biến";
   if (status === "hoan-tat") return "Hoàn tất";
@@ -276,6 +294,8 @@ function orderStatusLabel(status) {
 }
 
 function renderOrderPreview() {
+  // Gom đơn theo bàn để nhân viên nhìn được tổng quan "bàn nào có gì" tại một chỗ.
+  // Mỗi nhóm bàn hiển thị: số dòng món, tổng số lượng, tạm tính và trạng thái từng món.
   const previewBox = document.getElementById("orderPreviewList");
   if (!previewBox) {
     return;
@@ -311,6 +331,7 @@ function renderOrderPreview() {
 
       const orderRows = orders
         .map((order) => {
+          // Thành tiền dòng món = số lượng * đơn giá tại thời điểm order.
           const lineTotal = Number(order.qty || 0) * Number(order.price || 0);
           const created = order.createdAt ? `<small>Tạo lúc: ${order.createdAt}</small>` : "";
           return `
@@ -339,6 +360,7 @@ function renderOrderPreview() {
 }
 
 function renderTables() {
+  // Render danh sách bàn + đổ dữ liệu vào select của đặt món và thanh toán.
   const list = document.getElementById("tableList");
   const orderTable = document.getElementById("orderTable");
   const billTable = document.getElementById("billTable");
@@ -388,6 +410,7 @@ function renderTables() {
       if (!cfg.canChangeTable) {
         return;
       }
+      // Gửi mã bàn lên API để backend tự xác định trạng thái kế tiếp.
       const id = String(btn.dataset.id || "");
       try {
         await api(`/api/ban-an/${encodeURIComponent(id)}/chuyen-trang-thai`, { method: "POST" });
@@ -401,6 +424,7 @@ function renderTables() {
 }
 
 function renderMenuSelect() {
+  // Đồng bộ danh sách món cho form đặt món và form gán định mức nguyên liệu.
   const orderMenu = document.getElementById("orderMenu");
   const recipeDish = document.getElementById("recipeDish");
   orderMenu.innerHTML = "";
@@ -420,6 +444,7 @@ function renderMenuSelect() {
 }
 
 function renderIngredientSelect() {
+  // Đồng bộ select nguyên liệu và khối hiển thị tồn kho hiện tại.
   const ingredientSelect = document.getElementById("recipeIngredient");
   const ingredientList = document.getElementById("ingredientList");
   ingredientSelect.innerHTML = "";
@@ -437,6 +462,8 @@ function renderIngredientSelect() {
 }
 
 async function renderAllRecipeList() {
+  // Danh sách tổng hợp định mức giúp kiểm tra nhanh toàn bộ món mà không cần chọn từng món.
+  // Dữ liệu được nhóm theo mã món để tránh trùng tiêu đề món trên UI.
   const recipeAllList = document.getElementById("recipeAllList");
   if (!recipeAllList) {
     return;
@@ -478,6 +505,9 @@ async function renderAllRecipeList() {
 
 function bindIngredientFlow() {
   // Luồng kho: thêm nguyên liệu và gán định mức món-nguyên liệu.
+  // Quy tắc nghiệp vụ:
+  // - Nguyên liệu mới cần mã duy nhất.
+  // - Định mức luôn > 0 cho từng cặp món-nguyên liệu.
   const ingredientForm = document.getElementById("ingredientForm");
   const ingredientMessage = document.getElementById("ingredientMessage");
   const recipeForm = document.getElementById("recipeForm");
@@ -537,6 +567,7 @@ function bindIngredientFlow() {
 
 function bindOrderAction() {
   // Luồng order theo bàn: thêm món, gửi bếp, theo dõi đơn hiện tại.
+  // Đây là nghiệp vụ trung tâm kết nối phục vụ -> bếp -> thanh toán.
   const form = document.getElementById("orderForm");
   const orderMessage = document.getElementById("orderMessage");
   const currentOrder = document.getElementById("currentOrder");
@@ -561,6 +592,7 @@ function bindOrderAction() {
     try {
       await api("/api/don-hang", {
         method: "POST",
+        // currentUser.id hiện là mã nhân viên (NVxxx) sau khi đăng nhập.
         body: JSON.stringify({ tableId, menuId, qty, userId: currentUser?.id })
       });
 
@@ -580,6 +612,7 @@ function bindOrderAction() {
 
     const selectedTableId = document.getElementById("orderTable").value;
     try {
+      // Chuyển tất cả món trạng thái "moi" của bàn sang "dang-che-bien".
       await api("/api/don-hang/gui-bep", {
         method: "POST",
         body: JSON.stringify({ tableId: selectedTableId })
@@ -604,6 +637,8 @@ function bindOrderAction() {
 }
 
 function renderKitchen() {
+  // Chỉ hiển thị các món đang chế biến để bếp xử lý theo hàng chờ hiện tại.
+  // Bếp chỉ thao tác trên nhóm đơn đã gửi, không hiển thị món mới chưa gửi.
   const box = document.getElementById("kitchenQueue");
   const orders = appState.orders.filter((o) => o.status === "dang-che-bien");
   const tableNameMap = appState.tables.reduce((acc, table) => {
@@ -650,6 +685,10 @@ function renderKitchen() {
 
 function bindBilling() {
   // Luồng thu ngân: thanh toán hóa đơn, tính giảm giá và in bill.
+  // Sau khi thanh toán thành công:
+  // 1) Backend tạo bản ghi hoa_don.
+  // 2) Đơn hàng của bàn được xóa.
+  // 3) Trạng thái bàn tự về "trong".
   const form = document.getElementById("billingForm");
   const invoiceBox = document.getElementById("invoicePreview");
 
@@ -673,6 +712,7 @@ function bindBilling() {
       const { invoiceCode, subtotal, discount, total, createdAt } = result.invoice;
       const tableName = appState.tables.find((t) => String(t.id) === String(tableId))?.name || tableId;
 
+      // Mẫu hóa đơn hiển thị đúng dữ liệu đã ghi trong DB để đối chiếu khi in.
       invoiceBox.innerHTML = `
         <div class="invoice-paper">
           <div class="invoice-title">Hóa đơn thanh toán</div>
@@ -698,6 +738,7 @@ function bindBilling() {
 
       await renderAll();
 
+      // Delay nhẹ để DOM cập nhật xong rồi mới gọi print.
       setTimeout(() => {
         window.print();
       }, 150);
@@ -712,6 +753,7 @@ function renderRevenue() {
 }
 
 function renderRoleBadge() {
+  // Luôn đọc lại user từ localStorage để tránh mất badge khi refresh.
   const user = JSON.parse(localStorage.getItem(STORAGE_KEYS.currentUser) || "null");
   if (!user) return;
   currentUser = user;
@@ -720,6 +762,7 @@ function renderRoleBadge() {
 }
 
 async function showAppLayer(user) {
+  // Chuyển từ lớp auth sang lớp nghiệp vụ sau khi đăng nhập thành công.
   currentUser = user;
   document.getElementById("authLayer").classList.add("hidden");
   document.getElementById("appLayer").classList.remove("hidden");
@@ -729,6 +772,8 @@ async function showAppLayer(user) {
 }
 
 async function renderAll() {
+  // Trình tự render cố định giúp hạn chế trạng thái chớp giật khi nhiều card phụ thuộc nhau.
+  // Bất kỳ thao tác nghiệp vụ nào xong đều gọi lại hàm này để đồng bộ UI.
   await refreshState();
   renderTables();
   renderMenuSelect();
@@ -751,6 +796,7 @@ function bindLogout() {
   document.getElementById("logoutBtn").addEventListener("click", async () => {
     try {
       if (currentUser?.id) {
+        // Gửi log đăng xuất để backend cập nhật thoi_gian_dang_xuat.
         await api("/api/xac-thuc/dang-xuat", {
           method: "POST",
           body: JSON.stringify({ userId: currentUser.id })
@@ -769,6 +815,10 @@ function bindLogout() {
 
 async function boot() {
   // Điểm khởi động frontend: gắn sự kiện và nạp dữ liệu ban đầu.
+  // Luồng tổng:
+  // - Bind sự kiện một lần.
+  // - Nếu có phiên cũ thì vào thẳng app layer.
+  // - Nếu chưa đăng nhập thì vẫn nạp dữ liệu nền để giao diện không rỗng.
   bindAuthTabs();
   bindAuthForms();
   bindOrderAction();
