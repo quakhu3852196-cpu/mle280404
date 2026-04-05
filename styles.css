@@ -299,6 +299,7 @@ button {
 
 .app-grid {
   /* Grid chứa các khối nghiệp vụ chính */
+  /* Mỗi card sẽ chiếm số cột khác nhau để ưu tiên luồng thao tác thường dùng. */
   display: grid;
   grid-template-columns: repeat(12, 1fr);
   gap: 14px;
@@ -314,6 +315,7 @@ button {
 #tableCard { grid-column: span 4; }
 #orderCard { grid-column: span 4; }
 #kitchenCard { grid-column: span 4; }
+/* Khối preview đơn hàng chiếm toàn dòng để đủ chỗ hiển thị nhóm theo từng bàn. */
 #orderPreviewCard { grid-column: span 12; }
 #billingCard { grid-column: span 6; }
 #reportCard { grid-column: span 6; }
@@ -354,6 +356,7 @@ button {
 }
 
 .order-preview-list {
+  /* Tăng chiều cao vùng preview vì danh sách đơn hàng thường dài khi đông khách. */
   max-height: 340px;
 }
 
@@ -383,6 +386,7 @@ button {
 }
 
 .order-preview-row {
+  /* Mỗi dòng món gồm thông tin món + badge trạng thái để nhìn nhanh tiến độ xử lý. */
   display: flex;
   justify-content: space-between;
   gap: 8px;
@@ -434,6 +438,50 @@ button {
   gap: 8px;
 }
 
+.invoice-paper {
+  /* Khung hóa đơn mô phỏng giấy in để khi print giữ đúng bố cục báo cáo. */
+  border: 1px solid #d6bea1;
+  border-radius: 14px;
+  background: linear-gradient(180deg, #fffefb 0%, #fff8ef 100%);
+  padding: 14px;
+  box-shadow: 0 8px 18px rgba(75, 55, 35, 0.08);
+}
+
+.invoice-title {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 800;
+  font-size: 1rem;
+  color: #7d2017;
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px dashed #d6bea1;
+}
+
+.invoice-meta {
+  display: grid;
+  gap: 4px;
+  color: #4f473f;
+  font-size: 0.92rem;
+  margin-bottom: 10px;
+}
+
+.invoice-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  border-top: 1px dashed #e0ccba;
+  padding: 8px 0;
+}
+
+.invoice-total {
+  margin-top: 2px;
+  border-top: 2px solid #b67f4a;
+  padding-top: 10px;
+  font-size: 1.03rem;
+}
+
 @media (max-width: 980px) {
   .app-layer {
     padding-top: 106px;
@@ -469,5 +517,34 @@ button {
 
   .ingredient-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+@media print {
+  /* Chế độ in chỉ giữ phần hóa đơn, ẩn toàn bộ UI còn lại để tránh rác trang in. */
+  body * {
+    visibility: hidden;
+  }
+
+  #invoicePreview,
+  #invoicePreview * {
+    visibility: visible;
+  }
+
+  #invoicePreview {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    max-height: none;
+    overflow: visible;
+    padding: 0;
+    margin: 0;
+    background: #fff;
+  }
+
+  .invoice-paper {
+    border: 1px solid #333;
+    box-shadow: none;
   }
 }
